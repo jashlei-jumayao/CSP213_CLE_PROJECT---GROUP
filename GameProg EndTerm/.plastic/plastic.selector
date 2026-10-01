@@ -1,0 +1,4 @@
+repository "GameProg EndTerm/GameProg EndTerm@20066686026744@cloud"
+  path "/"
+    br "/main"
+    co "/main"
