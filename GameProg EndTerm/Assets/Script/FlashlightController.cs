@@ -13,27 +13,27 @@ public class FlashlightController : MonoBehaviour
     public float flashlightDrainMultiplier = 0.5f;
 
     [Header("Vision Distances")]
-    public float nearsightedDistance = 15f; // Camera clip plane when OFF
-    public float flashlightDistance = 50f;  // Camera clip plane when ON
+    public float nearsightedDistance = 15f; 
+    public float flashlightDistance = 50f;
 
     private bool isFlashlightOn = false;
 
     private void Start()
     {
-        // Auto-find references if unassigned
+      
         if (robotCamera == null) robotCamera = GetComponent<Camera>();
         if (energySystem == null) energySystem = GetComponentInParent<RobotEnergy>();
 
-        // Set default starting state (off and nearsighted)
+       
         SetFlashlightState(false);
     }
 
     private void Update()
     {
-        // --- Toggle Input ---
+       
         if (Input.GetKeyDown(toggleKey))
         {
-            // Block turning ON if out of energy
+           
             if (!isFlashlightOn && energySystem != null && !energySystem.HasEnergy())
             {
                 return;
@@ -42,17 +42,16 @@ public class FlashlightController : MonoBehaviour
             SetFlashlightState(!isFlashlightOn);
         }
 
-        // --- Active Energy Drain ---
+
         if (isFlashlightOn && energySystem != null)
         {
             if (energySystem.HasEnergy())
-            {
-                // Consume energy while light is active
+            { 
                 energySystem.ConsumeEnergy(flashlightDrainMultiplier);
             }
             else
             {
-                // Shut off and return to nearsighted vision when energy hits 0
+                
                 SetFlashlightState(false);
             }
         }
@@ -62,13 +61,13 @@ public class FlashlightController : MonoBehaviour
     {
         isFlashlightOn = state;
 
-        // Toggle spotlight
+
         if (robotFlashlight != null)
         {
             robotFlashlight.enabled = isFlashlightOn;
         }
 
-        // Extend or shrink camera rendering distance
+
         if (robotCamera != null)
         {
             robotCamera.farClipPlane = isFlashlightOn ? flashlightDistance : nearsightedDistance;
