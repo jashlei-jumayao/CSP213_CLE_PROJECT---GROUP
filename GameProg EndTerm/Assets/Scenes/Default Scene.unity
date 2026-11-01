@@ -159,7 +159,8 @@ Transform:
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 1302462580}
   m_Father: {fileID: 1177913288}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &166408418
@@ -6213,7 +6214,6 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1914796008}
-  - {fileID: 1302462580}
   - {fileID: 1109665772}
   - {fileID: 166408417}
   m_Father: {fileID: 0}
@@ -6266,8 +6266,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ab9114b3d7267c54ab8a56d3ee8889a0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::WheeledRobotMovement
-  moveSpeed: 5
-  sprintMultiplier: 2
+  moveSpeed: 3
+  sprintMultiplier: 1.5
   turnSpeed: 360
   stoppingDamping: 10
 --- !u!54 &1177913292
@@ -6443,11 +6443,11 @@ Transform:
   m_GameObject: {fileID: 1302462579}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0.411}
+  m_LocalPosition: {x: 0, y: 0, z: 0.41101074}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 1177913288}
+  m_Father: {fileID: 166408417}
   m_LocalEulerAnglesHint: {x: 90, y: 0, z: 0}
 --- !u!114 &1302462581
 MonoBehaviour:
