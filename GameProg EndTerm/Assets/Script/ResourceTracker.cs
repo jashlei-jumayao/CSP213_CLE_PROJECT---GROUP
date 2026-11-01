@@ -12,14 +12,14 @@ public class ResourceTracker : MonoBehaviour
     public TextMeshProUGUI coalCounterText;
 
     [Header("Fuel Values")]
-    public float leafEnergyValue = 5f;  // Leaves give a little energy
-    public float coalEnergyValue = 20f;  // Coal gives a lot of energy
+    public float leafEnergyValue = 5f; 
+    public float coalEnergyValue = 20f; 
 
     private RobotEnergy energySystem;
 
     private void Start()
     {
-        // Auto-find the energy script on the robot
+
         energySystem = GetComponent<RobotEnergy>();
         UpdateIcons();
     }
@@ -27,24 +27,22 @@ public class ResourceTracker : MonoBehaviour
     private void Update()
     {
         if (energySystem == null) return;
-
-        // Prevent burning fuel if energy is already full
         if (energySystem.currentEnergy >= energySystem.maxEnergy) return;
 
-        // Press '1' to burn a Leaf
+
         if (Input.GetKeyDown(KeyCode.Alpha1) && leaves > 0)
         {
-            leaves--;                                  // Remove 1 leaf from inventory
-            energySystem.RestoreEnergy(leafEnergyValue); // Give energy
-            UpdateIcons();                             // Update the UI numbers
+            leaves--;                                  
+            energySystem.RestoreEnergy(leafEnergyValue);
+            UpdateIcons();                             
         }
 
-        // Press '2' to burn a Coal
+
         if (Input.GetKeyDown(KeyCode.Alpha2) && coal > 0)
         {
-            coal--;                                    // Remove 1 coal from inventory
-            energySystem.RestoreEnergy(coalEnergyValue); // Give energy
-            UpdateIcons();                             // Update the UI numbers
+            coal--;                                   
+            energySystem.RestoreEnergy(coalEnergyValue);
+            UpdateIcons();                             
         }
     }
 
