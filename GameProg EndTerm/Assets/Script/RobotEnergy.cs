@@ -110,4 +110,20 @@ public class RobotEnergy : MonoBehaviour
             energyText.text = "Energy: " + Mathf.CeilToInt(currentEnergy).ToString();
         }
     }
+    public void DrainEnergy(float amount)
+    {
+        if (!isDepleted)
+        {
+            currentEnergy -= amount;
+
+            if (currentEnergy <= 0f)
+            {
+                currentEnergy = 0f;
+                isDepleted = true;
+                emptyTimer = 0f;
+            }
+
+            UpdateEnergyUI();
+        }
+    }
 }

@@ -1,83 +1,143 @@
 using UnityEngine;
+using UnityEngine.UI;
 
 public class ChestHidingSpot : MonoBehaviour
 {
-    [Header("Positions (Create Empty Child Objects)")]
-    public Transform hidePosition;  // Safe spot deep inside chest (rotated facing South)
-    public Transform peekPosition;  // Slightly elevated spot (rotated facing South)
+    [Header("Positions")]
+    public Transform hidePosition;
+    public Transform peekPosition;
 
     [Header("Controls & Settings")]
     public KeyCode interactKey = KeyCode.E;
     public KeyCode peekKey = KeyCode.Space;
     public float peekSpeed = 8f;
 
+    [Header("Overheat Mechanics")]
+    public GameObject overheatUI;
+    public Slider overheatSlider;
+    public Image overheatFillImage;
+    public Gradient overheatGradient;
+    public float delayBeforeOverheat = 5f;
+    public float heatPerSecond = 15f;
+    public float cooldownPerSecond = 10f;
+
+    private float currentOverheat = 0f;
+    private float timeHidden = 0f;
+
     private bool isPlayerInRange = false;
     private bool isHiding = false;
 
-    // Dynamically grabbed references
+    // References
     private GameObject playerRoot;
     private GameObject robotBody;
     private Transform playerCamera;
     private Transform originalCamParent;
     private Rigidbody playerRb;
 
-    // Scripts to disable while hiding
+    // --- THE FIX: Culling Mask Variables ---
+    private Light baseVisionLight;
+    private int baseLightMask;
+
+    private Light cameraFlashlight;
+    private int camLightMask;
+    // ---------------------------------------
+
     private MonoBehaviour movementScript;
     private PlayerNoiseEmitter noiseScript;
     private MonoBehaviour cameraScript;
 
-    // Memory to return camera to exact head position
     private Vector3 originalCamLocalPos;
     private Quaternion originalCamLocalRot;
 
     private void Update()
     {
-        // 1. Enter / Exit Logic
         if (Input.GetKeyDown(interactKey))
         {
-            if (isHiding)
+            if (isHiding) ExitChest();
+            else if (isPlayerInRange) EnterChest();
+        }
+
+        // --- OVERHEAT & COOLDOWN LOGIC ---
+        if (isHiding)
+        {
+            timeHidden += Time.deltaTime;
+
+            if (timeHidden >= delayBeforeOverheat)
             {
-                ExitChest();
+                currentOverheat += heatPerSecond * Time.deltaTime;
+
+                if (currentOverheat >= 100f)
+                {
+                    currentOverheat = 100f;
+                    Debug.Log("Overheated! Kicked out of chest.");
+                    ExitChest();
+                }
             }
-            else if (isPlayerInRange)
+        }
+        else
+        {
+            if (currentOverheat > 0f)
             {
-                EnterChest();
+                currentOverheat -= cooldownPerSecond * Time.deltaTime;
+                if (currentOverheat < 0f) currentOverheat = 0f;
             }
         }
 
-        // 2. Peeking & Rotation Logic
+        // --- UI VISIBILITY MANAGEMENT ---
+        if (overheatUI != null)
+        {
+            bool shouldShowUI = currentOverheat > 0f || (isHiding && timeHidden >= delayBeforeOverheat);
+
+            if (overheatUI.activeSelf != shouldShowUI)
+            {
+                overheatUI.SetActive(shouldShowUI);
+            }
+
+            if (shouldShowUI && overheatSlider != null)
+            {
+                overheatSlider.value = currentOverheat;
+
+                if (overheatFillImage != null)
+                {
+                    overheatFillImage.color = overheatGradient.Evaluate(currentOverheat / 100f);
+                }
+            }
+        }
+
+        // --- PEEKING & CAMERA MOVEMENT ---
         if (isHiding && playerCamera != null && hidePosition != null && peekPosition != null)
         {
-            Transform targetTransform = Input.GetKey(peekKey) ? peekPosition : hidePosition;
+            bool isPeeking = Input.GetKey(peekKey);
+            Transform targetTransform = isPeeking ? peekPosition : hidePosition;
 
-            playerCamera.position = Vector3.Lerp(
-                playerCamera.position,
-                targetTransform.position,
-                Time.deltaTime * peekSpeed
-            );
+            // THE FIX: Change what the light hits (Culling Mask) instead of turning the power off.
+            // This never touches '.enabled', meaning your custom F key script will never break!
+            if (baseVisionLight != null)
+                baseVisionLight.cullingMask = isPeeking ? baseLightMask : 0;
 
-            playerCamera.rotation = Quaternion.Slerp(
-                playerCamera.rotation,
-                targetTransform.rotation,
-                Time.deltaTime * peekSpeed
-            );
+            if (cameraFlashlight != null)
+                cameraFlashlight.cullingMask = isPeeking ? camLightMask : 0;
+
+            playerCamera.position = Vector3.Lerp(playerCamera.position, targetTransform.position, Time.deltaTime * peekSpeed);
         }
     }
 
     private void EnterChest()
     {
-        if (hidePosition == null || peekPosition == null)
-        {
-            Debug.LogError("ChestHidingSpot: Please assign HidePosition and PeekPosition in the Inspector!");
-            return;
-        }
-
+        if (hidePosition == null || peekPosition == null) return;
         isHiding = true;
 
-        // 1. Turn off visual body mesh
+        if (currentOverheat > 0f)
+        {
+            timeHidden = delayBeforeOverheat;
+        }
+        else
+        {
+            timeHidden = 0f;
+        }
+
         if (robotBody != null) robotBody.SetActive(false);
 
-        // 2. Temporarily detach camera and move to chest
         if (playerCamera != null)
         {
             originalCamParent = playerCamera.parent;
@@ -86,15 +146,25 @@ public class ChestHidingSpot : MonoBehaviour
 
             playerCamera.SetParent(transform);
             playerCamera.position = hidePosition.position;
-            playerCamera.rotation = hidePosition.rotation;
         }
 
-        // 3. Disable control scripts
+        // THE FIX: Save the original masks and set them to 0 (Nothing)
+        if (baseVisionLight != null)
+        {
+            baseLightMask = baseVisionLight.cullingMask;
+            baseVisionLight.cullingMask = 0;
+        }
+
+        if (cameraFlashlight != null)
+        {
+            camLightMask = cameraFlashlight.cullingMask;
+            cameraFlashlight.cullingMask = 0;
+        }
+
         if (movementScript != null) movementScript.enabled = false;
         if (noiseScript != null) noiseScript.enabled = false;
-        if (cameraScript != null) cameraScript.enabled = false;
+        if (cameraScript != null) cameraScript.enabled = true;
 
-        // 4. Freeze Rigidbody to prevent collider overlap from pushing player upward
         if (playerRb != null)
         {
             playerRb.linearVelocity = Vector3.zero;
@@ -107,10 +177,8 @@ public class ChestHidingSpot : MonoBehaviour
     {
         isHiding = false;
 
-        // 1. Turn visual body mesh back on
         if (robotBody != null) robotBody.SetActive(true);
 
-        // 2. Re-attach camera back to robot head
         if (playerCamera != null)
         {
             playerCamera.SetParent(originalCamParent);
@@ -118,15 +186,11 @@ public class ChestHidingSpot : MonoBehaviour
             playerCamera.localRotation = originalCamLocalRot;
         }
 
-        // 3. Unfreeze Rigidbody physics
-        if (playerRb != null)
-        {
-            playerRb.isKinematic = false;
-            playerRb.linearVelocity = Vector3.zero;
-            playerRb.angularVelocity = Vector3.zero;
-        }
+        // THE FIX: Restore the masks to normal when you leave
+        if (baseVisionLight != null) baseVisionLight.cullingMask = baseLightMask;
+        if (cameraFlashlight != null) cameraFlashlight.cullingMask = camLightMask;
 
-        // 4. Re-enable control scripts
+        if (playerRb != null) playerRb.isKinematic = false;
         if (movementScript != null) movementScript.enabled = true;
         if (noiseScript != null) noiseScript.enabled = true;
         if (cameraScript != null) cameraScript.enabled = true;
@@ -145,25 +209,29 @@ public class ChestHidingSpot : MonoBehaviour
             movementScript = playerRoot.GetComponent<WheeledRobotMovement>();
             noiseScript = playerRoot.GetComponent<PlayerNoiseEmitter>();
 
-            Transform bodyTransform = playerRoot.transform.Find("kalibot body");
-            if (bodyTransform == null)
+            Transform[] allChildren = playerRoot.GetComponentsInChildren<Transform>(true);
+            foreach (Transform child in allChildren)
             {
-                foreach (Transform child in playerRoot.transform)
+                if (child.name.ToLower().Contains("kalibot") || child.name.ToLower().Contains("body"))
                 {
-                    if (child.name.ToLower().Contains("kalibot") || child.name.ToLower().Contains("body"))
-                    {
-                        bodyTransform = child;
-                        break;
-                    }
+                    robotBody = child.gameObject;
+                    break;
                 }
             }
-            if (bodyTransform != null) robotBody = bodyTransform.gameObject;
 
             Camera cam = playerRoot.GetComponentInChildren<Camera>();
             if (cam != null)
             {
                 playerCamera = cam.transform;
                 cameraScript = cam.GetComponent<RobotHeadCamera>();
+
+                cameraFlashlight = playerCamera.GetComponentInChildren<Light>(true);
+            }
+
+            Transform baseLightTrans = playerRoot.transform.Find("BaseVisionLight");
+            if (baseLightTrans != null)
+            {
+                baseVisionLight = baseLightTrans.GetComponent<Light>();
             }
         }
     }
@@ -171,7 +239,6 @@ public class ChestHidingSpot : MonoBehaviour
     private void OnTriggerExit(Collider other)
     {
         Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
-
         if (rootTransform.gameObject == playerRoot || other.CompareTag("Player"))
         {
             isPlayerInRange = false;
