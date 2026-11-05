@@ -7,16 +7,17 @@ public class RobotEnergy : MonoBehaviour
     public float maxEnergy = 100f;
     public float currentEnergy;
     public float totalMovementTime = 30f;
+    public float passiveDrainPerSecond = 0.3333f;
 
     [Header("Recovery Settings")]
-    public float recoveryDelay = 10f;     
-    public float recoveryRate = 1f;     
+    public float recoveryDelay = 10f;
+    public float recoveryRate = 1f;
 
     [Header("UI References")]
     public TextMeshProUGUI energyText;
 
-    private bool isDepleted = false;     
-    private float emptyTimer = 0f;       
+    private bool isDepleted = false;
+    private float emptyTimer = 0f;
 
     private void Start()
     {
@@ -26,17 +27,27 @@ public class RobotEnergy : MonoBehaviour
 
     private void Update()
     {
-       
-        if (isDepleted)
+        if (!isDepleted && currentEnergy > 0f)
+        {
+            currentEnergy -= passiveDrainPerSecond * Time.deltaTime;
+
+            if (currentEnergy <= 0f)
+            {
+                currentEnergy = 0f;
+                isDepleted = true;
+                emptyTimer = 0f;
+            }
+
+            UpdateEnergyUI();
+        }
+        else if (isDepleted)
         {
             emptyTimer += Time.deltaTime;
 
-           
             if (emptyTimer >= recoveryDelay)
             {
                 currentEnergy += recoveryRate * Time.deltaTime;
 
-               
                 if (currentEnergy >= maxEnergy)
                 {
                     currentEnergy = maxEnergy;
@@ -50,44 +61,46 @@ public class RobotEnergy : MonoBehaviour
 
     public bool HasEnergy()
     {
-        return currentEnergy > 0f;
+        return !isDepleted;
     }
 
     public void ConsumeEnergy(float drainMultiplier = 1f)
     {
-        if (currentEnergy > 0f)
+        if (!isDepleted)
         {
-          
-            isDepleted = false;
-            emptyTimer = 0f;
-
             float drainRate = maxEnergy / totalMovementTime;
 
-          
             currentEnergy -= (drainRate * drainMultiplier) * Time.deltaTime;
 
-          
             if (currentEnergy <= 0f)
             {
                 currentEnergy = 0f;
                 isDepleted = true;
-                emptyTimer = 0f; 
+                emptyTimer = 0f;
             }
 
             UpdateEnergyUI();
+
         }
     }
 
     public void RestoreEnergy(float amount)
     {
         currentEnergy += amount;
-        if (currentEnergy > maxEnergy) currentEnergy = maxEnergy;
 
-       
-        isDepleted = false;
-        emptyTimer = 0f;
+        if (currentEnergy >= maxEnergy)
+        {
+            currentEnergy = maxEnergy;
+            isDepleted = false;
+            emptyTimer = 0f;
+        }
 
         UpdateEnergyUI();
+
+        if (TryGetComponent<PlayerNoiseEmitter>(out var noiseEmitter))
+        {
+            noiseEmitter.EmitFuelNoise();
+        }
     }
 
     public void UpdateEnergyUI()
