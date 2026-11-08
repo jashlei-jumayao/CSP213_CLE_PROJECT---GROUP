@@ -64,7 +64,7 @@ public class MonsterAI : MonoBehaviour
         {
             agent.SetDestination(lastHeardPosition);
 
-            // Suggestion 1: Speed Escalation
+            // Speed Escalation
             if (noiseRadius >= loudNoiseThreshold)
             {
                 agent.speed = huntSpeed;
@@ -74,6 +74,23 @@ public class MonsterAI : MonoBehaviour
                 agent.speed = suspicionSpeed;
             }
         }
+    }
+
+    // --- IMPROVEMENT 3: Investigate the chest instead of getting amnesia ---
+    public void InvestigateHiddenPlayer(Vector3 hideLocation)
+    {
+        Debug.Log("Player vanished! Sound Monster is searching the area...");
+
+        lastHeardPosition = hideLocation;
+
+        // Instantly transition to sweeping the area around the chest
+        currentState = MonsterState.Sweeping;
+        sweepsRemaining = sweepCount;
+        waitTimer = 0f;
+
+        if (agent != null) agent.speed = suspicionSpeed;
+
+        PickRandomDestination(sweepRadius);
     }
 
     private void HandleWandering()
@@ -101,7 +118,6 @@ public class MonsterAI : MonoBehaviour
 
         if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance)
         {
-            // Suggestion 3: Reached the location, begin the Area Sweep
             StartSweeping();
         }
     }
@@ -144,6 +160,8 @@ public class MonsterAI : MonoBehaviour
     {
         currentState = MonsterState.Wandering;
         waitTimer = 0f;
+
+        // This drops the speed down to the slow wandering pace instantly
         if (agent != null) agent.speed = wanderSpeed;
 
         PickRandomDestination(wanderRadius);

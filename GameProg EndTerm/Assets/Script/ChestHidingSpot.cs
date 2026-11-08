@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System.Collections.Generic;
 
 public class ChestHidingSpot : MonoBehaviour
 {
@@ -34,20 +35,28 @@ public class ChestHidingSpot : MonoBehaviour
     private Transform originalCamParent;
     private Rigidbody playerRb;
 
-    // --- THE FIX: Culling Mask Variables ---
+    // Culling Mask Variables
     private Light baseVisionLight;
     private int baseLightMask;
 
     private Light cameraFlashlight;
     private int camLightMask;
-    // ---------------------------------------
 
+    // Variables to remember where the light belongs
+    private Transform originalBaseLightParent;
+    private Vector3 originalBaseLightLocalPos;
+    private Quaternion originalBaseLightLocalRot;
+
+    // References to re-enable components properly
     private MonoBehaviour movementScript;
     private PlayerNoiseEmitter noiseScript;
     private MonoBehaviour cameraScript;
 
     private Vector3 originalCamLocalPos;
     private Quaternion originalCamLocalRot;
+
+    // Tracks the exact colliders that need to be turned back on
+    private List<Collider> collidersToRestore = new List<Collider>();
 
     private void Update()
     {
@@ -110,8 +119,6 @@ public class ChestHidingSpot : MonoBehaviour
             bool isPeeking = Input.GetKey(peekKey);
             Transform targetTransform = isPeeking ? peekPosition : hidePosition;
 
-            // THE FIX: Change what the light hits (Culling Mask) instead of turning the power off.
-            // This never touches '.enabled', meaning your custom F key script will never break!
             if (baseVisionLight != null)
                 baseVisionLight.cullingMask = isPeeking ? baseLightMask : 0;
 
@@ -124,6 +131,10 @@ public class ChestHidingSpot : MonoBehaviour
 
     private void EnterChest()
     {
+        // THE FIX: Uses the fully updated FindObjectsByType signature without the deprecated SortMode
+        MonsterAI[] allMonsters = UnityEngine.Object.FindObjectsByType<MonsterAI>(FindObjectsInactive.Exclude);
+        MonsterVisionAI[] allVisionMonsters = UnityEngine.Object.FindObjectsByType<MonsterVisionAI>(FindObjectsInactive.Exclude);
+
         if (hidePosition == null || peekPosition == null) return;
         isHiding = true;
 
@@ -136,8 +147,6 @@ public class ChestHidingSpot : MonoBehaviour
             timeHidden = 0f;
         }
 
-        if (robotBody != null) robotBody.SetActive(false);
-
         if (playerCamera != null)
         {
             originalCamParent = playerCamera.parent;
@@ -148,9 +157,19 @@ public class ChestHidingSpot : MonoBehaviour
             playerCamera.position = hidePosition.position;
         }
 
-        // THE FIX: Save the original masks and set them to 0 (Nothing)
+        // Rescue the light from the body BEFORE we turn the body off
         if (baseVisionLight != null)
         {
+            originalBaseLightParent = baseVisionLight.transform.parent;
+            originalBaseLightLocalPos = baseVisionLight.transform.localPosition;
+            originalBaseLightLocalRot = baseVisionLight.transform.localRotation;
+
+            if (playerCamera != null)
+            {
+                baseVisionLight.transform.SetParent(playerCamera);
+                baseVisionLight.transform.localPosition = Vector3.zero;
+            }
+
             baseLightMask = baseVisionLight.cullingMask;
             baseVisionLight.cullingMask = 0;
         }
@@ -160,6 +179,24 @@ public class ChestHidingSpot : MonoBehaviour
             camLightMask = cameraFlashlight.cullingMask;
             cameraFlashlight.cullingMask = 0;
         }
+
+        // THE FIX: Safely store active colliders so we don't accidentally enable disabled triggers upon exiting
+        collidersToRestore.Clear();
+        if (playerRoot != null)
+        {
+            Collider[] playerColliders = playerRoot.GetComponentsInChildren<Collider>();
+            foreach (Collider col in playerColliders)
+            {
+                if (col.enabled)
+                {
+                    collidersToRestore.Add(col);
+                    col.enabled = false;
+                }
+            }
+        }
+
+        // NOW it is safe to turn the body off
+        if (robotBody != null) robotBody.SetActive(false);
 
         if (movementScript != null) movementScript.enabled = false;
         if (noiseScript != null) noiseScript.enabled = false;
@@ -171,12 +208,23 @@ public class ChestHidingSpot : MonoBehaviour
             playerRb.angularVelocity = Vector3.zero;
             playerRb.isKinematic = true;
         }
+
+        foreach (MonsterAI monster in allMonsters)
+        {
+            monster.InvestigateHiddenPlayer(transform.position);
+        }
+
+        foreach (MonsterVisionAI monster in allVisionMonsters)
+        {
+            monster.InvestigateHiddenPlayer(transform.position);
+        }
     }
 
     private void ExitChest()
     {
         isHiding = false;
 
+        // Turn the body back on first
         if (robotBody != null) robotBody.SetActive(true);
 
         if (playerCamera != null)
@@ -186,9 +234,24 @@ public class ChestHidingSpot : MonoBehaviour
             playerCamera.localRotation = originalCamLocalRot;
         }
 
-        // THE FIX: Restore the masks to normal when you leave
-        if (baseVisionLight != null) baseVisionLight.cullingMask = baseLightMask;
+        // Put the rescued light exactly back where it was
+        if (baseVisionLight != null && originalBaseLightParent != null)
+        {
+            baseVisionLight.transform.SetParent(originalBaseLightParent);
+            baseVisionLight.transform.localPosition = originalBaseLightLocalPos;
+            baseVisionLight.transform.localRotation = originalBaseLightLocalRot;
+
+            baseVisionLight.cullingMask = baseLightMask;
+        }
+
         if (cameraFlashlight != null) cameraFlashlight.cullingMask = camLightMask;
+
+        // THE FIX: Restore only the colliders that were active when the player entered
+        foreach (Collider col in collidersToRestore)
+        {
+            if (col != null) col.enabled = true;
+        }
+        collidersToRestore.Clear();
 
         if (playerRb != null) playerRb.isKinematic = false;
         if (movementScript != null) movementScript.enabled = true;
@@ -228,10 +291,14 @@ public class ChestHidingSpot : MonoBehaviour
                 cameraFlashlight = playerCamera.GetComponentInChildren<Light>(true);
             }
 
-            Transform baseLightTrans = playerRoot.transform.Find("BaseVisionLight");
-            if (baseLightTrans != null)
+            Light[] allLights = playerRoot.GetComponentsInChildren<Light>(true);
+            foreach (Light l in allLights)
             {
-                baseVisionLight = baseLightTrans.GetComponent<Light>();
+                if (l.gameObject.name.Contains("BaseVisionLight"))
+                {
+                    baseVisionLight = l;
+                    break;
+                }
             }
         }
     }
@@ -239,7 +306,7 @@ public class ChestHidingSpot : MonoBehaviour
     private void OnTriggerExit(Collider other)
     {
         Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
-        if (rootTransform.gameObject == playerRoot || other.CompareTag("Player"))
+        if (playerRoot != null && (rootTransform.gameObject == playerRoot || other.CompareTag("Player")))
         {
             isPlayerInRange = false;
         }

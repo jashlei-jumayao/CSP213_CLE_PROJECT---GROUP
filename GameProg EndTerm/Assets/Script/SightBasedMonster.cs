@@ -36,8 +36,12 @@ public class MonsterVisionAI : MonoBehaviour
     private float waitTimer;
     private int sweepsRemaining;
 
-    [Header("Slowdown Settings")]
-    private bool isMonsterSlowed = false;
+    [Header("Post-Attack Settings")]
+    private bool isIgnoringPlayer = false;
+    private Coroutine ignoreRoutine;
+
+    // --- Flag to prevent attacking the player when hidden ---
+    private bool isPlayerHidden = false;
 
 
     private void Start()
@@ -50,45 +54,48 @@ public class MonsterVisionAI : MonoBehaviour
 
         ReturnToWandering();
     }
-    
 
-    public void ApplySlowdown(float slowMultiplier, float duration)
+    // --- Call this from the Chest script to instantly reset the monster ---
+    public void StopChasingAndWander()
     {
-        if (!isMonsterSlowed)
-        {
-            StartCoroutine(MonsterSlowdownRoutine(slowMultiplier, duration));
-        }
+        Debug.Log("Player hid! Vision Monster drops aggro and wanders immediately.");
+        isPlayerHidden = true;
+        ReturnToWandering();
     }
 
-    private System.Collections.IEnumerator MonsterSlowdownRoutine(float slowMultiplier, float duration)
+    // --- Call this from the Chest script when the player exits ---
+    public void PlayerExitedChest()
     {
-        isMonsterSlowed = true;
+        isPlayerHidden = false;
+    }
 
-        // Temporarily reduce current agent speed
-        if (agent != null)
-        {
-            agent.speed *= slowMultiplier;
-        }
+    // --- NEW: Forces the monster to ignore the player and walk away after an attack ---
+    public void LoseInterestForSeconds(float duration)
+    {
+        if (ignoreRoutine != null) StopCoroutine(ignoreRoutine);
+        ignoreRoutine = StartCoroutine(IgnorePlayerRoutine(duration));
+    }
 
-        Debug.Log("Monster slowed down!");
+    private System.Collections.IEnumerator IgnorePlayerRoutine(float duration)
+    {
+        Debug.Log("Monster is satisfied and wandering away!");
+        isIgnoringPlayer = true;
+
+        ReturnToWandering(); // Instantly drop aggro and pick a random spot to walk to
 
         yield return new WaitForSeconds(duration);
 
-        // Restore speed based on whatever state the monster is currently in
-        if (agent != null)
-        {
-            if (currentState == MonsterState.Wandering) agent.speed = wanderSpeed;
-            else if (currentState == MonsterState.Investigating) agent.speed = huntSpeed;
-            else if (currentState == MonsterState.Sweeping) agent.speed = suspicionSpeed;
-        }
-
-        isMonsterSlowed = false;
-        Debug.Log("Monster movement returned to normal.");
+        isIgnoringPlayer = false;
+        Debug.Log("Monster is actively hunting again.");
     }
+
     private void Update()
     {
-        // Continuously check if the player is in sight
-        CheckForPlayerVision();
+        // Check for player vision only if the player is NOT hidden and NOT being ignored
+        if (!isPlayerHidden && !isIgnoringPlayer)
+        {
+            CheckForPlayerVision();
+        }
 
         switch (currentState)
         {
@@ -156,8 +163,8 @@ public class MonsterVisionAI : MonoBehaviour
 
     private void HandleInvestigating()
     {
-        // If we currently see the player, keep updating destination and sprinting
-        if (targetPlayer != null && Vector3.Distance(transform.position, targetPlayer.position) <= viewRadius)
+        // If we currently see the player (and they aren't hidden/ignored), keep updating destination and sprinting
+        if (!isPlayerHidden && !isIgnoringPlayer && targetPlayer != null && Vector3.Distance(transform.position, targetPlayer.position) <= viewRadius)
         {
             Vector3 dirToPlayer = (targetPlayer.position - transform.position).normalized;
             if (Vector3.Angle(transform.forward, dirToPlayer) < viewAngle / 2f)
@@ -201,9 +208,6 @@ public class MonsterVisionAI : MonoBehaviour
 
     private void HandleSweeping()
     {
-        // If it spots the player mid-sweep, break sweep and hunt immediately
-        // (Handled automatically by CheckForPlayerVision running every frame in Update)
-
         if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance)
         {
             waitTimer += Time.deltaTime;
@@ -245,7 +249,6 @@ public class MonsterVisionAI : MonoBehaviour
         }
     }
 
-    // Optional: Draw debug lines in the Scene view to visualize the monster's vision cone
     private void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.yellow;
@@ -257,5 +260,21 @@ public class MonsterVisionAI : MonoBehaviour
         Gizmos.color = Color.red;
         Gizmos.DrawRay(transform.position + Vector3.up, leftRayDirection * viewRadius);
         Gizmos.DrawRay(transform.position + Vector3.up, rightRayDirection * viewRadius);
+    }
+    public void InvestigateHiddenPlayer(Vector3 hideLocation)
+    {
+        Debug.Log("Player vanished! Monster is searching the area...");
+
+        // Use lastSeenPosition for Vision AI, and lastHeardPosition for Sound AI
+        lastSeenPosition = hideLocation; // Change to lastHeardPosition in MonsterAI
+
+        // Instantly transition to sweeping the area around the chest
+        currentState = MonsterState.Sweeping;
+        sweepsRemaining = sweepCount;
+        waitTimer = 0f;
+
+        if (agent != null) agent.speed = suspicionSpeed;
+
+        PickRandomDestination(sweepRadius);
     }
 }

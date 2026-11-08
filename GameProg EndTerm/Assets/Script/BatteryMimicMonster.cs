@@ -7,10 +7,9 @@ public class MonsterDrainPlayer : MonoBehaviour
     [Range(0f, 1f)]
     public float drainPercentage = 0.5f;
 
-    [Header("Monster Slowdown Settings")]
-    [Range(0f, 1f)]
-    public float slowMultiplier = 0.3f; // 0.3 means monster speed drops to 30% (heavy slug pace)
-    public float slowDuration = 10f;    // How long the monster is slowed in seconds
+    [Header("Post-Attack Settings")]
+    [Tooltip("How long the monster ignores the player and walks away")]
+    public float ignoreDuration = 5f;
 
     [Header("Cooldown to prevent instant multi-hits")]
     public float touchCooldown = 1.5f;
@@ -34,7 +33,7 @@ public class MonsterDrainPlayer : MonoBehaviour
         {
             GameObject playerObj = rootTransform.gameObject;
 
-            // 1. Drain 50% Player Energy
+            // 1. Drain Player Energy
             RobotEnergy energyScript = playerObj.GetComponent<RobotEnergy>();
             if (energyScript != null)
             {
@@ -43,11 +42,11 @@ public class MonsterDrainPlayer : MonoBehaviour
                 Debug.Log("Monster drained " + drainAmount + " energy from player.");
             }
 
-            // 2. Slow down the Monster for 10 seconds
+            // 2. Make the Monster lose interest and walk away
             if (monsterAI != null)
             {
-                monsterAI.ApplySlowdown(slowMultiplier, slowDuration);
-                Debug.Log("Monster applied 10s slowdown to itself!");
+                monsterAI.LoseInterestForSeconds(ignoreDuration);
+                Debug.Log("Monster is satisfied and walking away for " + ignoreDuration + " seconds!");
             }
 
             nextTouchTime = Time.time + touchCooldown;
