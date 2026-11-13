@@ -6,22 +6,30 @@ public class MonsterAI : MonoBehaviour
     public enum MonsterState { Wandering, Investigating, Sweeping }
 
     [Header("Movement Speeds")]
-    public float wanderSpeed = 2.0f;     // Slow, idle pacing
-    public float suspicionSpeed = 3.5f;  // Brisk walk to check a small noise
-    public float huntSpeed = 7.0f;       // Full sprint to chase a loud noise
+    public float wanderSpeed = 2.0f;
+    public float suspicionSpeed = 3.5f;
+    public float huntSpeed = 7.0f;
+
+    [Header("Suspicion Meter Settings")]
+    [Tooltip("How much noise it takes to trigger an investigation (e.g., 100)")]
+    public float suspicionThreshold = 100f;
+    [Tooltip("How fast the monster calms down if it hears nothing (points per second)")]
+    public float suspicionDecayRate = 15f;
+    [Tooltip("Current suspicion level (visible for debugging)")]
+    public float currentSuspicion = 0f;
 
     [Header("Wander Settings")]
     public float wanderRadius = 15f;
     public float wanderWaitTime = 2f;
 
     [Header("Investigation Settings")]
-    public float loudNoiseThreshold = 20f; // Any noise larger than 20m triggers a sprint
+    public float loudNoiseThreshold = 20f;
     public float soundCutoffTimeout = 5f;
 
     [Header("Area Sweep Settings")]
-    public int sweepCount = 3;           // How many points to check before giving up
-    public float sweepRadius = 5f;       // How far around the noise origin it searches
-    public float sweepWaitTime = 1f;     // How long it pauses at each search point
+    public int sweepCount = 3;
+    public float sweepRadius = 5f;
+    public float sweepWaitTime = 1f;
 
     private NavMeshAgent agent;
     private MonsterState currentState = MonsterState.Wandering;
@@ -39,6 +47,13 @@ public class MonsterAI : MonoBehaviour
 
     private void Update()
     {
+        // Slowly drain suspicion over time if the monster is just wandering
+        if (currentState == MonsterState.Wandering && currentSuspicion > 0f)
+        {
+            currentSuspicion -= suspicionDecayRate * Time.deltaTime;
+            currentSuspicion = Mathf.Max(0f, currentSuspicion); // Prevent it from going below 0
+        }
+
         switch (currentState)
         {
             case MonsterState.Wandering:
@@ -53,37 +68,54 @@ public class MonsterAI : MonoBehaviour
         }
     }
 
-    // Now accepts the size of the noise as a second parameter
+    // --- FIX 1: Redirect 2-parameter calls to the main 3-parameter method ---
     public void InvestigateSound(Vector3 soundLocation, float noiseRadius)
     {
-        lastHeardPosition = soundLocation;
-        lastSoundTime = Time.time;
-        currentState = MonsterState.Investigating;
+        // Fallback: uses noiseRadius as suspicionAmount if not specified
+        InvestigateSound(soundLocation, noiseRadius, noiseRadius);
+    }
 
-        if (agent != null && agent.isOnNavMesh)
+    // --- MAIN SOUND INVESTIGATION (3 parameters) ---
+    public void InvestigateSound(Vector3 soundLocation, float noiseRadius, float suspicionAmount)
+    {
+        // 1. Add the specific suspicion amount
+        currentSuspicion += suspicionAmount;
+
+        // 2. Only investigate if the meter overflows
+        if (currentSuspicion >= suspicionThreshold)
         {
-            agent.SetDestination(lastHeardPosition);
+            // Cap the suspicion so it doesn't grow infinitely
+            currentSuspicion = suspicionThreshold;
 
-            // Speed Escalation
-            if (noiseRadius >= loudNoiseThreshold)
+            lastHeardPosition = soundLocation;
+            lastSoundTime = Time.time;
+            currentState = MonsterState.Investigating;
+
+            if (agent != null && agent.isOnNavMesh)
             {
-                agent.speed = huntSpeed;
-            }
-            else
-            {
-                agent.speed = suspicionSpeed;
+                agent.SetDestination(lastHeardPosition);
+
+                // Speed Escalation based on how far the noise reached
+                if (noiseRadius >= loudNoiseThreshold)
+                {
+                    agent.speed = huntSpeed;
+                }
+                else
+                {
+                    agent.speed = suspicionSpeed;
+                }
             }
         }
     }
 
-    // --- IMPROVEMENT 3: Investigate the chest instead of getting amnesia ---
+    // --- FIX 2: Restored method required by ChestHidingSpot ---
     public void InvestigateHiddenPlayer(Vector3 hideLocation)
     {
         Debug.Log("Player vanished! Sound Monster is searching the area...");
 
         lastHeardPosition = hideLocation;
+        currentSuspicion = suspicionThreshold; // Max out suspicion since it saw them hide
 
-        // Instantly transition to sweeping the area around the chest
         currentState = MonsterState.Sweeping;
         sweepsRemaining = sweepCount;
         waitTimer = 0f;
@@ -128,7 +160,7 @@ public class MonsterAI : MonoBehaviour
         sweepsRemaining = sweepCount;
         waitTimer = 0f;
 
-        agent.speed = suspicionSpeed; // Slow down to carefully inspect the area
+        agent.speed = suspicionSpeed;
         PickRandomDestination(sweepRadius);
     }
 
@@ -143,13 +175,11 @@ public class MonsterAI : MonoBehaviour
 
                 if (sweepsRemaining > 0)
                 {
-                    // Pick the next sweep point
                     PickRandomDestination(sweepRadius);
                     waitTimer = 0f;
                 }
                 else
                 {
-                    // Finished sweeping, go back to idle wandering
                     ReturnToWandering();
                 }
             }
@@ -161,7 +191,9 @@ public class MonsterAI : MonoBehaviour
         currentState = MonsterState.Wandering;
         waitTimer = 0f;
 
-        // This drops the speed down to the slow wandering pace instantly
+        // Reset the meter so the player has a clean slate after escaping
+        currentSuspicion = 0f;
+
         if (agent != null) agent.speed = wanderSpeed;
 
         PickRandomDestination(wanderRadius);
@@ -171,7 +203,6 @@ public class MonsterAI : MonoBehaviour
     {
         Vector3 randomDirection = Random.insideUnitSphere * radius;
 
-        // If sweeping, center the search on the last heard position. If wandering, center on the monster itself.
         Vector3 searchCenter = (currentState == MonsterState.Sweeping) ? lastHeardPosition : transform.position;
         randomDirection += searchCenter;
 

@@ -3,26 +3,28 @@ using UnityEngine;
 public class PlayerInteractor : MonoBehaviour
 {
     [Header("Interaction Settings")]
-    public float interactRange = 5f;      
-    public ResourceTracker robotInventory; 
+    [Tooltip("How far the camera's aiming laser reaches")]
+    public float interactRange = 5f;
+    public ResourceTracker robotInventory;
 
-    private Camera cam;
+    [Header("References")]
+    public Camera mainCamera;
 
     private void Start()
     {
-        cam = GetComponent<Camera>();
+        if (mainCamera == null) mainCamera = Camera.main;
 
-       
         if (robotInventory == null)
         {
-            robotInventory = GetComponentInParent<ResourceTracker>();
+            robotInventory = GetComponent<ResourceTracker>();
+            if (robotInventory == null)
+                robotInventory = GetComponentInParent<ResourceTracker>();
         }
     }
 
     private void Update()
     {
-       
-        if (Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.E))
+        if (Input.GetKeyDown(KeyCode.E) || Input.GetMouseButtonDown(0))
         {
             InteractWithObject();
         }
@@ -30,21 +32,38 @@ public class PlayerInteractor : MonoBehaviour
 
     private void InteractWithObject()
     {
-       
-        Ray ray = new Ray(cam.transform.position, cam.transform.forward);
-        RaycastHit hit;
+        if (mainCamera == null) return;
 
-        
-        if (Physics.Raycast(ray, out hit, interactRange))
+        // Shoot a ray exactly where the center of the camera is looking
+        Ray ray = new Ray(mainCamera.transform.position, mainCamera.transform.forward);
+
+        // RaycastAll shoots through EVERYTHING in its path up to the interactRange
+        RaycastHit[] hits = Physics.RaycastAll(ray, interactRange, ~0, QueryTriggerInteraction.Collide);
+
+        ResourcePickup closestItem = null;
+        float closestDistance = Mathf.Infinity;
+
+        // Check every single object the ray pierced through
+        foreach (RaycastHit hit in hits)
         {
-         
-            ResourcePickup targetItem = hit.collider.GetComponent<ResourcePickup>();
+            // See if the pierced object is a ResourcePickup
+            ResourcePickup item = hit.collider.GetComponentInParent<ResourcePickup>();
 
-            if (targetItem != null)
+            if (item != null)
             {
-               
-                targetItem.Collect(robotInventory);
+                // If the ray hit multiple items, only pick up the closest one
+                if (hit.distance < closestDistance)
+                {
+                    closestDistance = hit.distance;
+                    closestItem = item;
+                }
             }
+        }
+
+        // Collect the item we successfully aimed at
+        if (closestItem != null)
+        {
+            closestItem.Collect(robotInventory);
         }
     }
 }

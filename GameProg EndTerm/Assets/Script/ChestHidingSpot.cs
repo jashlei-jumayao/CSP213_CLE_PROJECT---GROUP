@@ -131,7 +131,7 @@ public class ChestHidingSpot : MonoBehaviour
 
     private void EnterChest()
     {
-        // THE FIX: Uses the fully updated FindObjectsByType signature without the deprecated SortMode
+        // FIX: Removed obsolete FindObjectsSortMode parameter to clear compilation warnings[cite: 1]
         MonsterAI[] allMonsters = UnityEngine.Object.FindObjectsByType<MonsterAI>(FindObjectsInactive.Exclude);
         MonsterVisionAI[] allVisionMonsters = UnityEngine.Object.FindObjectsByType<MonsterVisionAI>(FindObjectsInactive.Exclude);
 
@@ -157,7 +157,6 @@ public class ChestHidingSpot : MonoBehaviour
             playerCamera.position = hidePosition.position;
         }
 
-        // Rescue the light from the body BEFORE we turn the body off
         if (baseVisionLight != null)
         {
             originalBaseLightParent = baseVisionLight.transform.parent;
@@ -180,7 +179,6 @@ public class ChestHidingSpot : MonoBehaviour
             cameraFlashlight.cullingMask = 0;
         }
 
-        // THE FIX: Safely store active colliders so we don't accidentally enable disabled triggers upon exiting
         collidersToRestore.Clear();
         if (playerRoot != null)
         {
@@ -195,12 +193,11 @@ public class ChestHidingSpot : MonoBehaviour
             }
         }
 
-        // NOW it is safe to turn the body off
         if (robotBody != null) robotBody.SetActive(false);
 
         if (movementScript != null) movementScript.enabled = false;
         if (noiseScript != null) noiseScript.enabled = false;
-        if (cameraScript != null) cameraScript.enabled = true;
+        if (cameraScript != null) cameraScript.enabled = false; // Disabled so mouse look doesn't break peeking lerp
 
         if (playerRb != null)
         {
@@ -224,7 +221,6 @@ public class ChestHidingSpot : MonoBehaviour
     {
         isHiding = false;
 
-        // Turn the body back on first
         if (robotBody != null) robotBody.SetActive(true);
 
         if (playerCamera != null)
@@ -234,7 +230,6 @@ public class ChestHidingSpot : MonoBehaviour
             playerCamera.localRotation = originalCamLocalRot;
         }
 
-        // Put the rescued light exactly back where it was
         if (baseVisionLight != null && originalBaseLightParent != null)
         {
             baseVisionLight.transform.SetParent(originalBaseLightParent);
@@ -246,7 +241,6 @@ public class ChestHidingSpot : MonoBehaviour
 
         if (cameraFlashlight != null) cameraFlashlight.cullingMask = camLightMask;
 
-        // THE FIX: Restore only the colliders that were active when the player entered
         foreach (Collider col in collidersToRestore)
         {
             if (col != null) col.enabled = true;
@@ -287,7 +281,6 @@ public class ChestHidingSpot : MonoBehaviour
             {
                 playerCamera = cam.transform;
                 cameraScript = cam.GetComponent<RobotHeadCamera>();
-
                 cameraFlashlight = playerCamera.GetComponentInChildren<Light>(true);
             }
 
@@ -305,6 +298,8 @@ public class ChestHidingSpot : MonoBehaviour
 
     private void OnTriggerExit(Collider other)
     {
+        if (isHiding) return; // Prevents trigger exit from firing when player colliders turn off
+
         Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
         if (playerRoot != null && (rootTransform.gameObject == playerRoot || other.CompareTag("Player")))
         {

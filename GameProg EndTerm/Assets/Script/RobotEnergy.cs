@@ -12,22 +12,23 @@ public class RobotEnergy : MonoBehaviour
     [Header("Recovery Settings")]
     public float recoveryDelay = 10f;
     public float recoveryRate = 1f;
+    [Tooltip("How often to emit noise to alert monsters while recovering (seconds)")]
+    public float recoveryNoiseInterval = 0.5f;
 
     [Header("UI References")]
     public TextMeshProUGUI energyText;
 
     [Header("Audio References")]
     public AudioClip recoveryStartSound;
-    private AudioSource audioSource;
+    [Tooltip("Sound played once when the battery completely dies and hits 0")]
+    public AudioClip powerDownSound;
 
     private bool isDepleted = false;
     private float emptyTimer = 0f;
+    private float noisePulseTimer = 0f;
 
     private void Start()
     {
-        // Grab the AudioSource that is already on the player (used by your movement script)
-        audioSource = GetComponent<AudioSource>();
-
         currentEnergy = maxEnergy;
         UpdateEnergyUI();
     }
@@ -41,8 +42,7 @@ public class RobotEnergy : MonoBehaviour
             if (currentEnergy <= 0f)
             {
                 currentEnergy = 0f;
-                isDepleted = true;
-                emptyTimer = 0f;
+                TriggerDepletion();
             }
 
             UpdateEnergyUI();
@@ -53,21 +53,46 @@ public class RobotEnergy : MonoBehaviour
 
             if (emptyTimer >= recoveryDelay)
             {
-                // --- NEW: Play the sound exactly once when energy lifts off from 0 ---
-                if (currentEnergy == 0f && audioSource != null && recoveryStartSound != null)
+                if (currentEnergy == 0f && recoveryStartSound != null)
                 {
-                    audioSource.PlayOneShot(recoveryStartSound);
+                    AudioSource.PlayClipAtPoint(recoveryStartSound, transform.position, 1.0f);
                 }
 
                 currentEnergy += recoveryRate * Time.deltaTime;
+
+                noisePulseTimer += Time.deltaTime;
+                if (noisePulseTimer >= recoveryNoiseInterval)
+                {
+                    if (TryGetComponent<PlayerNoiseEmitter>(out var noiseEmitter))
+                    {
+                        noiseEmitter.EmitRecoveryNoise();
+                    }
+                    noisePulseTimer = 0f;
+                }
 
                 if (currentEnergy >= maxEnergy)
                 {
                     currentEnergy = maxEnergy;
                     isDepleted = false;
+                    noisePulseTimer = 0f;
                 }
 
                 UpdateEnergyUI();
+            }
+        }
+    }
+
+    private void TriggerDepletion()
+    {
+        if (!isDepleted)
+        {
+            isDepleted = true;
+            emptyTimer = 0f;
+            noisePulseTimer = 0f;
+
+            if (powerDownSound != null)
+            {
+                AudioSource.PlayClipAtPoint(powerDownSound, transform.position, 1.0f);
             }
         }
     }
@@ -88,8 +113,7 @@ public class RobotEnergy : MonoBehaviour
             if (currentEnergy <= 0f)
             {
                 currentEnergy = 0f;
-                isDepleted = true;
-                emptyTimer = 0f;
+                TriggerDepletion();
             }
 
             UpdateEnergyUI();
@@ -103,8 +127,14 @@ public class RobotEnergy : MonoBehaviour
         if (currentEnergy >= maxEnergy)
         {
             currentEnergy = maxEnergy;
+        }
+
+        // Instantly exits depleted state if energy is above 0, allowing fuel burning to work
+        if (currentEnergy > 0f)
+        {
             isDepleted = false;
             emptyTimer = 0f;
+            noisePulseTimer = 0f;
         }
 
         UpdateEnergyUI();
@@ -132,8 +162,7 @@ public class RobotEnergy : MonoBehaviour
             if (currentEnergy <= 0f)
             {
                 currentEnergy = 0f;
-                isDepleted = true;
-                emptyTimer = 0f;
+                TriggerDepletion();
             }
 
             UpdateEnergyUI();
