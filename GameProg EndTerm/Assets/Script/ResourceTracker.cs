@@ -29,20 +29,24 @@ public class ResourceTracker : MonoBehaviour
         if (energySystem == null) return;
         if (energySystem.currentEnergy >= energySystem.maxEnergy) return;
 
-
         if (Input.GetKeyDown(KeyCode.Alpha1) && leaves > 0)
         {
-            leaves--;                                  
-            energySystem.RestoreEnergy(leafEnergyValue);
-            UpdateIcons();                             
+            // Only consume the leaf if the energy system accepts it
+            if (energySystem.RestoreEnergy(leafEnergyValue))
+            {
+                leaves--;
+                UpdateIcons();
+            }
         }
-
 
         if (Input.GetKeyDown(KeyCode.Alpha2) && coal > 0)
         {
-            coal--;                                   
-            energySystem.RestoreEnergy(coalEnergyValue);
-            UpdateIcons();                             
+            // Only consume the coal if the energy system accepts it
+            if (energySystem.RestoreEnergy(coalEnergyValue))
+            {
+                coal--;
+                UpdateIcons();
+            }
         }
     }
 

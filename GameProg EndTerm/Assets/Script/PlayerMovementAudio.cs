@@ -13,6 +13,15 @@ public class PlayerMovementAudio : MonoBehaviour
     public float stepDistanceVariance = 0.3f;
     public float minSpeed = 0.5f;
 
+    [Header("Sprint Boost Settings")]
+    public float sprintVolumeMultiplier = 1.3f;
+    public float sprintPitchMultiplier = 1.15f;
+    public float sprintStepDistanceMultiplier = 0.75f;
+
+    [Header("Rotation Settings")]
+    [Range(0f, 1f)] public float rotationVolumeMultiplier = 0.4f;
+    public float rotationStepAngle = 20f;
+
     [Header("Volume & Fade Settings")]
     [Range(0f, 1f)] public float baseVolume = 0.5f;
     public float minVolumeMod = 0.85f;
@@ -27,10 +36,12 @@ public class PlayerMovementAudio : MonoBehaviour
     private Rigidbody rb;
     private AudioSource audioSource;
     private Vector3 lastStepPosition;
+    private float lastStepAngle;
     private float currentTargetDistance;
     private Coroutine fadeCoroutine;
 
     private int lastPlayedIndex = -1;
+    private bool wasSprintingLastFrame = false;
 
     private void Start()
     {
@@ -42,6 +53,7 @@ public class PlayerMovementAudio : MonoBehaviour
         audioSource.playOnAwake = false;
 
         lastStepPosition = transform.position;
+        lastStepAngle = transform.eulerAngles.y;
         SetNextStepDistance();
     }
 
@@ -49,31 +61,81 @@ public class PlayerMovementAudio : MonoBehaviour
     {
         if (rb == null) return;
 
-        if (rb.linearVelocity.magnitude > minSpeed)
+        bool isMoving = rb.linearVelocity.magnitude > minSpeed;
+        bool isSprinting = isMoving && Input.GetKey(KeyCode.LeftShift);
+        bool isTurning = Mathf.Abs(Input.GetAxis("Horizontal")) > 0.01f || Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.D);
+
+        // REAL-TIME SPRINT BOOST: If sprinting changes mid-clip, instantly scale the currently playing audio
+        if (audioSource.isPlaying && isSprinting != wasSprintingLastFrame)
         {
-            // If the player starts moving again while fading, interrupt the fade
+            if (isSprinting)
+            {
+                audioSource.pitch *= sprintPitchMultiplier;
+                audioSource.volume = Mathf.Clamp01(audioSource.volume * sprintVolumeMultiplier);
+            }
+            else
+            {
+                audioSource.pitch /= sprintPitchMultiplier;
+                audioSource.volume = Mathf.Clamp01(audioSource.volume / sprintVolumeMultiplier);
+            }
+        }
+        wasSprintingLastFrame = isSprinting;
+
+        if (isMoving || isTurning)
+        {
+            // If the player starts moving/turning again while fading, interrupt the fade
             if (fadeCoroutine != null)
             {
                 StopCoroutine(fadeCoroutine);
                 fadeCoroutine = null;
-                audioSource.Stop(); // Cut the quiet tail so the next step can trigger immediately
+                audioSource.Stop();
             }
 
-            float distanceMoved = Vector3.Distance(transform.position, lastStepPosition);
-
-            if (distanceMoved >= currentTargetDistance)
+            // 1. Process Movement Steps
+            if (isMoving)
             {
-                if (!audioSource.isPlaying)
+                float distanceMoved = Vector3.Distance(transform.position, lastStepPosition);
+                float requiredDistance = currentTargetDistance * (isSprinting ? sprintStepDistanceMultiplier : 1f);
+
+                if (distanceMoved >= requiredDistance)
                 {
-                    PlayMovementSound();
-                    lastStepPosition = transform.position;
-                    SetNextStepDistance();
+                    if (!audioSource.isPlaying)
+                    {
+                        PlaySound(1f, isSprinting);
+                        lastStepPosition = transform.position;
+                        SetNextStepDistance();
+                    }
                 }
+            }
+            else
+            {
+                lastStepPosition = transform.position;
+            }
+
+            // 2. Process Rotation Ticks (Obeys !audioSource.isPlaying so it never interlaps)
+            if (isTurning)
+            {
+                float angleMoved = Mathf.Abs(Mathf.DeltaAngle(transform.eulerAngles.y, lastStepAngle));
+
+                if (angleMoved >= rotationStepAngle)
+                {
+                    if (!audioSource.isPlaying)
+                    {
+                        PlaySound(rotationVolumeMultiplier, isSprinting);
+                        lastStepAngle = transform.eulerAngles.y;
+                    }
+                }
+            }
+            else
+            {
+                lastStepAngle = transform.eulerAngles.y;
             }
         }
         else
         {
             lastStepPosition = transform.position;
+            lastStepAngle = transform.eulerAngles.y;
+            wasSprintingLastFrame = false;
 
             // Trigger the fade out if we are currently playing and not already fading
             if (audioSource.isPlaying && fadeCoroutine == null)
@@ -89,7 +151,7 @@ public class PlayerMovementAudio : MonoBehaviour
         currentTargetDistance = Mathf.Max(0.1f, currentTargetDistance);
     }
 
-    private void PlayMovementSound()
+    private void PlaySound(float volumeScale, bool isSprinting)
     {
         if (movementSounds.Length == 0) return;
 
@@ -107,8 +169,17 @@ public class PlayerMovementAudio : MonoBehaviour
         }
         lastPlayedIndex = randomIndex;
 
-        audioSource.pitch = Random.Range(minPitch, maxPitch);
-        audioSource.volume = baseVolume * Random.Range(minVolumeMod, maxVolumeMod);
+        float pitch = Random.Range(minPitch, maxPitch);
+        float volume = baseVolume * Random.Range(minVolumeMod, maxVolumeMod) * volumeScale;
+
+        if (isSprinting)
+        {
+            pitch *= sprintPitchMultiplier;
+            volume *= sprintVolumeMultiplier;
+        }
+
+        audioSource.pitch = Mathf.Clamp(pitch, 0.1f, 3f);
+        audioSource.volume = Mathf.Clamp01(volume);
 
         audioSource.clip = movementSounds[randomIndex];
         audioSource.Play();

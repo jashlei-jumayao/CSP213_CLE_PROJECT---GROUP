@@ -22,10 +22,13 @@ public class DynamicResourceSpawner : MonoBehaviour
     public int maxResourcesInWorld = 15;
     public float spawnInterval = 1.0f;
 
-    [Header("Distances & Spacing")]
+    [Header("Distances & Forward Arc")]
     public float minSpawnRadius = 20f;
     public float maxSpawnRadius = 45f;
     public float despawnRadius = 60f;
+    [Tooltip("Cone angle in front of the player where items can spawn (e.g., 120 = 60° left and right of forward).")]
+    [Range(10f, 180f)]
+    public float spawnArcAngle = 120f;
     [Tooltip("Minimum physical distance between spawned items")]
     public float minDistanceBetweenItems = 5f;
 
@@ -59,14 +62,29 @@ public class DynamicResourceSpawner : MonoBehaviour
 
     private void TrySpawnResource()
     {
-        Vector2 randomCircle = Random.insideUnitCircle.normalized;
+        // Project player forward onto the horizontal XZ plane
+        Vector3 flatForward = Vector3.ProjectOnPlane(player.forward, Vector3.up).normalized;
+        if (flatForward.sqrMagnitude < 0.001f) flatForward = Vector3.forward;
+
+        // Pick a random direction within the forward arc
+        float halfArc = spawnArcAngle * 0.5f;
+        float randomAngle = Random.Range(-halfArc, halfArc);
+        Vector3 spawnDirection = Quaternion.Euler(0f, randomAngle, 0f) * flatForward;
+
         float randomDistance = Random.Range(minSpawnRadius, maxSpawnRadius);
-        Vector3 randomPoint = player.position + new Vector3(randomCircle.x, 0, randomCircle.y) * randomDistance;
+        Vector3 randomPoint = player.position + spawnDirection * randomDistance;
 
         NavMeshHit hit;
         if (NavMesh.SamplePosition(randomPoint, out hit, 5f, NavMesh.AllAreas))
         {
             Vector3 finalSpawnPosition = hit.position;
+
+            // Verify NavMesh snapping didn't pull the spawn point behind the player
+            Vector3 dirToHit = Vector3.ProjectOnPlane(finalSpawnPosition - player.position, Vector3.up).normalized;
+            if (Vector3.Angle(flatForward, dirToHit) > halfArc)
+            {
+                return;
+            }
 
             // Spacing Check: Ensure it is not too close to other spawned resources
             foreach (GameObject resource in activeResources)
@@ -84,7 +102,6 @@ public class DynamicResourceSpawner : MonoBehaviour
             // Obstacle Check: Ensure no physical colliders are overlapping
             if (!Physics.CheckSphere(finalSpawnPosition, itemRadius, obstacleLayers))
             {
-                // Adds the adjustable Y-axis offset to the final spawn position
                 Spawn(finalSpawnPosition + (Vector3.up * spawnYOffset));
             }
         }

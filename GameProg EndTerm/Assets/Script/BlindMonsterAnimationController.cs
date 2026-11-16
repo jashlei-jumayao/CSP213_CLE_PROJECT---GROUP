@@ -1,38 +1,49 @@
 using UnityEngine;
 using UnityEngine.AI;
 
-[RequireComponent(typeof(Animator), typeof(NavMeshAgent))]
+[RequireComponent(typeof(NavMeshAgent))]
 public class BlindMonsterAnimationController : MonoBehaviour
 {
-    private Animator anim;
-    private NavMeshAgent agent;
+    [Header("References")]
+    [Tooltip("Leave empty to automatically find the Animator on this object or its children.")]
+    public Animator anim;
 
     [Header("Animation Settings")]
-    [Tooltip("Smooths out the transition between walk and run")]
+    [Tooltip("Smooths out transitions between Walk and Run in the Blend Tree.")]
     public float speedDampTime = 0.1f;
 
-    private void Start()
+    private NavMeshAgent agent;
+    private static readonly int SpeedHash = Animator.StringToHash("Speed");
+
+    private void Awake()
     {
-        anim = GetComponent<Animator>();
         agent = GetComponent<NavMeshAgent>();
+
+        if (anim == null)
+        {
+            anim = GetComponent<Animator>();
+            if (anim == null) anim = GetComponentInChildren<Animator>();
+        }
+
+        if (anim != null)
+        {
+            // Prevent root motion from overriding NavMeshAgent movement
+            anim.applyRootMotion = false;
+        }
+        else
+        {
+            Debug.LogError($"[{name}] BlindMonsterAnimationController could not find an Animator on this object or its children!");
+        }
     }
 
     private void Update()
     {
-        // Get the actual physical speed of the NavMeshAgent
-        float currentSpeed = agent.velocity.magnitude;
+        if (anim == null || agent == null) return;
 
-        // Pass the speed to the Animator's "Speed" parameter.
-        // The damp time prevents the animation from snapping instantly.
-        anim.SetFloat("Speed", currentSpeed, speedDampTime, Time.deltaTime);
-    }
+        // Measure horizontal speed so slope/step changes don't spike the Blend Tree
+        Vector3 horizontalVelocity = new Vector3(agent.velocity.x, 0f, agent.velocity.z);
+        float currentSpeed = horizontalVelocity.magnitude;
 
-    // --- Call this from your Touch/Drain scripts when it catches the player ---
-    public void PlayAttackAnimation()
-    {
-        if (anim != null)
-        {
-            anim.SetTrigger("Attack");
-        }
+        anim.SetFloat(SpeedHash, currentSpeed, speedDampTime, Time.deltaTime);
     }
 }

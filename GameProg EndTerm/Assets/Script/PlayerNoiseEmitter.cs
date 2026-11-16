@@ -30,7 +30,16 @@ public class PlayerNoiseEmitter : MonoBehaviour
     public Color fuelPreviewColor = Color.red;
     public Color recoveryPreviewColor = Color.magenta;
 
+    private BlindMonsterNoiseSpawner blindMonsterSpawner;
     private float nextNoiseTime = 0f;
+
+    private void Awake()
+    {
+        // Checks this object, parent objects, and finally the scene so hierarchy placement never breaks the link
+        blindMonsterSpawner = GetComponent<BlindMonsterNoiseSpawner>();
+        if (blindMonsterSpawner == null) blindMonsterSpawner = GetComponentInParent<BlindMonsterNoiseSpawner>();
+        if (blindMonsterSpawner == null) blindMonsterSpawner = FindFirstObjectByType<BlindMonsterNoiseSpawner>();
+    }
 
     private void Update()
     {
@@ -39,7 +48,6 @@ public class PlayerNoiseEmitter : MonoBehaviour
             float currentRadius = 0f;
             float currentSuspicionAmount = 0f;
 
-            // Determine both the radius and the suspicion amount based on player input
             if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.S))
             {
                 if (Input.GetKey(KeyCode.LeftShift))
@@ -77,19 +85,25 @@ public class PlayerNoiseEmitter : MonoBehaviour
         EmitNoise(recoveryNoise, recoverySuspicion);
     }
 
-    // --- NEW: Now requires both radius and suspicionAmount ---
     private void EmitNoise(float radius, float suspicionAmount)
     {
+        if (blindMonsterSpawner != null)
+        {
+            blindMonsterSpawner.AddNoise(suspicionAmount);
+        }
+
         Vector3 noisePosition = (noiseOrigin != null) ? noiseOrigin.position : transform.position;
 
         Collider[] hitColliders = Physics.OverlapSphere(noisePosition, radius);
+        System.Collections.Generic.HashSet<MonsterAI> alertedMonsters = new System.Collections.Generic.HashSet<MonsterAI>();
+
         foreach (Collider hit in hitColliders)
         {
-            if (hit.CompareTag("Monster"))
+            MonsterAI monsterAI = hit.GetComponentInParent<MonsterAI>();
+            if (monsterAI != null && (hit.CompareTag("Monster") || monsterAI.CompareTag("Monster")))
             {
-                if (hit.TryGetComponent<MonsterAI>(out MonsterAI monsterAI))
+                if (alertedMonsters.Add(monsterAI))
                 {
-                    // Passes the separated suspicion amount to the monster
                     monsterAI.InvestigateSound(noisePosition, radius, suspicionAmount);
                 }
             }

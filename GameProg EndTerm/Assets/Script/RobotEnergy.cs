@@ -102,6 +102,11 @@ public class RobotEnergy : MonoBehaviour
         return !isDepleted;
     }
 
+    public bool CanPerformActions()
+    {
+        return !isDepleted;
+    }
+
     public void ConsumeEnergy(float drainMultiplier = 1f)
     {
         if (!isDepleted)
@@ -120,8 +125,11 @@ public class RobotEnergy : MonoBehaviour
         }
     }
 
-    public void RestoreEnergy(float amount)
+    // Now returns true if energy was successfully restored, or false if blocked by shutdown
+    public bool RestoreEnergy(float amount)
     {
+        if (isDepleted) return false;
+
         currentEnergy += amount;
 
         if (currentEnergy >= maxEnergy)
@@ -129,7 +137,6 @@ public class RobotEnergy : MonoBehaviour
             currentEnergy = maxEnergy;
         }
 
-        // Instantly exits depleted state if energy is above 0, allowing fuel burning to work
         if (currentEnergy > 0f)
         {
             isDepleted = false;
@@ -143,6 +150,8 @@ public class RobotEnergy : MonoBehaviour
         {
             noiseEmitter.EmitFuelNoise();
         }
+
+        return true;
     }
 
     public void UpdateEnergyUI()

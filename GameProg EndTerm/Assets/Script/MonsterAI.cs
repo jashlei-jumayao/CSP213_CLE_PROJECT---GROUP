@@ -1,13 +1,24 @@
 using UnityEngine;
 using UnityEngine.AI;
 
+[RequireComponent(typeof(NavMeshAgent))]
 public class MonsterAI : MonoBehaviour
 {
     public enum MonsterState { Wandering, Investigating, Sweeping }
 
-    [Header("Movement Speeds")]
+    [Header("Visual Orientation Fix")]
+    [Tooltip("Assign the child Armature object (the one with -90 on X). Leave empty to auto-grab the first child.")]
+    public Transform modelTransform;
+    [Tooltip("90 fixes walking to the right; use -90 if it faces the opposite side.")]
+    public float modelYRotationOffset = 90f;
+    [Tooltip("How fast the monster turns to face its movement direction.")]
+    public float turnSpeed = 12f;
+
+    [Header("Movement Speeds (Match Blend Tree Thresholds)")]
+    [Tooltip("Matches Armature|Monster Walk threshold (2.0)")]
     public float wanderSpeed = 2.0f;
     public float suspicionSpeed = 3.5f;
+    [Tooltip("Matches Armature|Monster Run threshold (7.0)")]
     public float huntSpeed = 7.0f;
 
     [Header("Suspicion Meter Settings")]
@@ -17,6 +28,16 @@ public class MonsterAI : MonoBehaviour
     public float suspicionDecayRate = 15f;
     [Tooltip("Current suspicion level (visible for debugging)")]
     public float currentSuspicion = 0f;
+
+    [Header("Aggression Audio")]
+    [Tooltip("Sound played when the suspicion meter reaches full and the monster locks onto a sound.")]
+    public AudioClip aggressionSound;
+    [Range(0f, 1f)]
+    public float aggressionVolume = 1f;
+    [Tooltip("Minimum seconds before the aggression roar can trigger again.")]
+    public float aggressionSoundCooldown = 8f;
+    public float minAudioDistance = 8f;
+    public float maxAudioDistance = 65f;
 
     [Header("Wander Settings")]
     public float wanderRadius = 15f;
@@ -32,26 +53,61 @@ public class MonsterAI : MonoBehaviour
     public float sweepWaitTime = 1f;
 
     private NavMeshAgent agent;
+    private AudioSource audioSource;
     private MonsterState currentState = MonsterState.Wandering;
+    private Quaternion initialModelLocalRotation;
 
     private Vector3 lastHeardPosition;
     private float lastSoundTime;
+    private float lastAggressionSoundTime = -999f;
     private float waitTimer;
     private int sweepsRemaining;
 
-    private void Start()
+    private void Awake()
     {
         agent = GetComponent<NavMeshAgent>();
+        agent.updateRotation = false;
+
+        // Reuse existing AudioSource or create a 3D one on the monster
+        audioSource = GetComponent<AudioSource>();
+        if (audioSource == null)
+        {
+            audioSource = gameObject.AddComponent<AudioSource>();
+        }
+        audioSource.playOnAwake = false;
+        audioSource.spatialBlend = 1f;
+        audioSource.rolloffMode = AudioRolloffMode.Linear;
+        audioSource.minDistance = minAudioDistance;
+        audioSource.maxDistance = maxAudioDistance;
+
+        if (TryGetComponent<Rigidbody>(out var rb))
+        {
+            rb.freezeRotation = true;
+        }
+
+        if (modelTransform == null && transform.childCount > 0)
+        {
+            modelTransform = transform.GetChild(0);
+        }
+
+        if (modelTransform != null)
+        {
+            initialModelLocalRotation = modelTransform.localRotation;
+        }
+    }
+
+    private void OnEnable()
+    {
+        lastAggressionSoundTime = -999f;
         ReturnToWandering();
     }
 
     private void Update()
     {
-        // Slowly drain suspicion over time if the monster is just wandering
         if (currentState == MonsterState.Wandering && currentSuspicion > 0f)
         {
             currentSuspicion -= suspicionDecayRate * Time.deltaTime;
-            currentSuspicion = Mathf.Max(0f, currentSuspicion); // Prevent it from going below 0
+            currentSuspicion = Mathf.Max(0f, currentSuspicion);
         }
 
         switch (currentState)
@@ -68,24 +124,59 @@ public class MonsterAI : MonoBehaviour
         }
     }
 
-    // --- FIX 1: Redirect 2-parameter calls to the main 3-parameter method ---
+    private void LateUpdate()
+    {
+        RotateTowardMovement();
+    }
+
+    private void RotateTowardMovement()
+    {
+        Vector3 rawDir = agent.desiredVelocity.sqrMagnitude > 0.05f ? agent.desiredVelocity : agent.velocity;
+        Vector3 moveDirection = new Vector3(rawDir.x, 0f, rawDir.z);
+
+        if (moveDirection.sqrMagnitude > 0.01f)
+        {
+            Quaternion targetRotation = Quaternion.LookRotation(moveDirection.normalized);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, turnSpeed * Time.deltaTime);
+        }
+
+        if (modelTransform != null)
+        {
+            modelTransform.localRotation = Quaternion.Euler(0f, modelYRotationOffset, 0f) * initialModelLocalRotation;
+        }
+    }
+
+    public void SetInitialWanderNear(Vector3 targetArea, float radius)
+    {
+        if (agent == null || !agent.isOnNavMesh) return;
+
+        Vector3 randomOffset = Random.insideUnitSphere * radius;
+        if (NavMesh.SamplePosition(targetArea + randomOffset, out NavMeshHit hit, radius, NavMesh.AllAreas))
+        {
+            agent.speed = wanderSpeed;
+            agent.SetDestination(hit.position);
+        }
+    }
+
     public void InvestigateSound(Vector3 soundLocation, float noiseRadius)
     {
-        // Fallback: uses noiseRadius as suspicionAmount if not specified
         InvestigateSound(soundLocation, noiseRadius, noiseRadius);
     }
 
-    // --- MAIN SOUND INVESTIGATION (3 parameters) ---
     public void InvestigateSound(Vector3 soundLocation, float noiseRadius, float suspicionAmount)
     {
-        // 1. Add the specific suspicion amount
+        bool wasBelowThreshold = currentSuspicion < suspicionThreshold;
         currentSuspicion += suspicionAmount;
 
-        // 2. Only investigate if the meter overflows
         if (currentSuspicion >= suspicionThreshold)
         {
-            // Cap the suspicion so it doesn't grow infinitely
             currentSuspicion = suspicionThreshold;
+
+            // Play the aggression sound when the meter first fills or when transitioning from Wandering
+            if (wasBelowThreshold || currentState == MonsterState.Wandering)
+            {
+                TryPlayAggressionSound();
+            }
 
             lastHeardPosition = soundLocation;
             lastSoundTime = Time.time;
@@ -94,27 +185,26 @@ public class MonsterAI : MonoBehaviour
             if (agent != null && agent.isOnNavMesh)
             {
                 agent.SetDestination(lastHeardPosition);
-
-                // Speed Escalation based on how far the noise reached
-                if (noiseRadius >= loudNoiseThreshold)
-                {
-                    agent.speed = huntSpeed;
-                }
-                else
-                {
-                    agent.speed = suspicionSpeed;
-                }
+                agent.speed = (noiseRadius >= loudNoiseThreshold) ? huntSpeed : suspicionSpeed;
             }
         }
     }
 
-    // --- FIX 2: Restored method required by ChestHidingSpot ---
+    private void TryPlayAggressionSound()
+    {
+        if (aggressionSound == null || audioSource == null) return;
+        if (Time.time - lastAggressionSoundTime < aggressionSoundCooldown) return;
+
+        audioSource.minDistance = minAudioDistance;
+        audioSource.maxDistance = maxAudioDistance;
+        audioSource.PlayOneShot(aggressionSound, aggressionVolume);
+        lastAggressionSoundTime = Time.time;
+    }
+
     public void InvestigateHiddenPlayer(Vector3 hideLocation)
     {
-        Debug.Log("Player vanished! Sound Monster is searching the area...");
-
         lastHeardPosition = hideLocation;
-        currentSuspicion = suspicionThreshold; // Max out suspicion since it saw them hide
+        currentSuspicion = suspicionThreshold;
 
         currentState = MonsterState.Sweeping;
         sweepsRemaining = sweepCount;
@@ -140,9 +230,7 @@ public class MonsterAI : MonoBehaviour
 
     private void HandleInvestigating()
     {
-        float timeSinceLastSound = Time.time - lastSoundTime;
-
-        if (timeSinceLastSound >= soundCutoffTimeout)
+        if (Time.time - lastSoundTime >= soundCutoffTimeout)
         {
             ReturnToWandering();
             return;
@@ -160,7 +248,7 @@ public class MonsterAI : MonoBehaviour
         sweepsRemaining = sweepCount;
         waitTimer = 0f;
 
-        agent.speed = suspicionSpeed;
+        if (agent != null) agent.speed = suspicionSpeed;
         PickRandomDestination(sweepRadius);
     }
 
@@ -190,19 +278,23 @@ public class MonsterAI : MonoBehaviour
     {
         currentState = MonsterState.Wandering;
         waitTimer = 0f;
-
-        // Reset the meter so the player has a clean slate after escaping
         currentSuspicion = 0f;
 
-        if (agent != null) agent.speed = wanderSpeed;
-
-        PickRandomDestination(wanderRadius);
+        if (agent != null)
+        {
+            agent.speed = wanderSpeed;
+            if (agent.isOnNavMesh)
+            {
+                PickRandomDestination(wanderRadius);
+            }
+        }
     }
 
     private void PickRandomDestination(float radius)
     {
-        Vector3 randomDirection = Random.insideUnitSphere * radius;
+        if (agent == null || !agent.isOnNavMesh) return;
 
+        Vector3 randomDirection = Random.insideUnitSphere * radius;
         Vector3 searchCenter = (currentState == MonsterState.Sweeping) ? lastHeardPosition : transform.position;
         randomDirection += searchCenter;
 

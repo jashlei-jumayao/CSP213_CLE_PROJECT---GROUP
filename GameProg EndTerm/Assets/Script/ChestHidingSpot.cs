@@ -13,6 +13,17 @@ public class ChestHidingSpot : MonoBehaviour
     public KeyCode peekKey = KeyCode.Space;
     public float peekSpeed = 8f;
 
+    [Header("Peek Camera Rotation")]
+    [Tooltip("Base Euler angle offset added to Peek Position's rotation.")]
+    public Vector3 peekRotationOffset = Vector3.zero;
+    [Tooltip("Allow rotating the camera with the mouse while peeking.")]
+    public bool allowMouseLookWhilePeeking = true;
+    public float peekLookSensitivity = 2f;
+    [Tooltip("Maximum left/right rotation angle (in degrees) from the peek center.")]
+    public float maxPeekYaw = 60f;
+    [Tooltip("Maximum up/down rotation angle (in degrees) from the peek center.")]
+    public float maxPeekPitch = 30f;
+
     [Header("Overheat Mechanics")]
     public GameObject overheatUI;
     public Slider overheatSlider;
@@ -24,6 +35,9 @@ public class ChestHidingSpot : MonoBehaviour
 
     private float currentOverheat = 0f;
     private float timeHidden = 0f;
+
+    private float currentPeekYaw = 0f;
+    private float currentPeekPitch = 0f;
 
     private bool isPlayerInRange = false;
     private bool isHiding = false;
@@ -113,7 +127,7 @@ public class ChestHidingSpot : MonoBehaviour
             }
         }
 
-        // --- PEEKING & CAMERA MOVEMENT ---
+        // --- PEEKING & CAMERA MOVEMENT / ROTATION ---
         if (isHiding && playerCamera != null && hidePosition != null && peekPosition != null)
         {
             bool isPeeking = Input.GetKey(peekKey);
@@ -126,17 +140,47 @@ public class ChestHidingSpot : MonoBehaviour
                 cameraFlashlight.cullingMask = isPeeking ? camLightMask : 0;
 
             playerCamera.position = Vector3.Lerp(playerCamera.position, targetTransform.position, Time.deltaTime * peekSpeed);
+
+            Quaternion targetRotation;
+            if (isPeeking)
+            {
+                if (allowMouseLookWhilePeeking)
+                {
+                    currentPeekYaw += Input.GetAxis("Mouse X") * peekLookSensitivity;
+                    currentPeekPitch -= Input.GetAxis("Mouse Y") * peekLookSensitivity;
+
+                    currentPeekYaw = Mathf.Clamp(currentPeekYaw, -maxPeekYaw, maxPeekYaw);
+                    currentPeekPitch = Mathf.Clamp(currentPeekPitch, -maxPeekPitch, maxPeekPitch);
+                }
+                else
+                {
+                    currentPeekYaw = 0f;
+                    currentPeekPitch = 0f;
+                }
+
+                Quaternion basePeekRot = peekPosition.rotation * Quaternion.Euler(peekRotationOffset);
+                targetRotation = basePeekRot * Quaternion.Euler(currentPeekPitch, currentPeekYaw, 0f);
+            }
+            else
+            {
+                currentPeekYaw = Mathf.Lerp(currentPeekYaw, 0f, Time.deltaTime * peekSpeed);
+                currentPeekPitch = Mathf.Lerp(currentPeekPitch, 0f, Time.deltaTime * peekSpeed);
+                targetRotation = hidePosition.rotation;
+            }
+
+            playerCamera.rotation = Quaternion.Slerp(playerCamera.rotation, targetRotation, Time.deltaTime * peekSpeed);
         }
     }
 
     private void EnterChest()
     {
-        // FIX: Removed obsolete FindObjectsSortMode parameter to clear compilation warnings[cite: 1]
         MonsterAI[] allMonsters = UnityEngine.Object.FindObjectsByType<MonsterAI>(FindObjectsInactive.Exclude);
         MonsterVisionAI[] allVisionMonsters = UnityEngine.Object.FindObjectsByType<MonsterVisionAI>(FindObjectsInactive.Exclude);
 
         if (hidePosition == null || peekPosition == null) return;
         isHiding = true;
+        currentPeekYaw = 0f;
+        currentPeekPitch = 0f;
 
         if (currentOverheat > 0f)
         {
@@ -155,6 +199,7 @@ public class ChestHidingSpot : MonoBehaviour
 
             playerCamera.SetParent(transform);
             playerCamera.position = hidePosition.position;
+            playerCamera.rotation = hidePosition.rotation;
         }
 
         if (baseVisionLight != null)
@@ -197,7 +242,7 @@ public class ChestHidingSpot : MonoBehaviour
 
         if (movementScript != null) movementScript.enabled = false;
         if (noiseScript != null) noiseScript.enabled = false;
-        if (cameraScript != null) cameraScript.enabled = false; // Disabled so mouse look doesn't break peeking lerp
+        if (cameraScript != null) cameraScript.enabled = false;
 
         if (playerRb != null)
         {
@@ -220,6 +265,8 @@ public class ChestHidingSpot : MonoBehaviour
     private void ExitChest()
     {
         isHiding = false;
+        currentPeekYaw = 0f;
+        currentPeekPitch = 0f;
 
         if (robotBody != null) robotBody.SetActive(true);
 
@@ -298,7 +345,7 @@ public class ChestHidingSpot : MonoBehaviour
 
     private void OnTriggerExit(Collider other)
     {
-        if (isHiding) return; // Prevents trigger exit from firing when player colliders turn off
+        if (isHiding) return;
 
         Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
         if (playerRoot != null && (rootTransform.gameObject == playerRoot || other.CompareTag("Player")))

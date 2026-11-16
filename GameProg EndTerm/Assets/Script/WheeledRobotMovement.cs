@@ -8,6 +8,10 @@ public class WheeledRobotMovement : MonoBehaviour
     public float turnSpeed = 120f;
     public float stoppingDamping = 10f;
 
+    [Header("UI References")]
+    [Tooltip("Leave empty to auto-find CircularCompass in the scene and bind it to this robot body.")]
+    public CircularCompass compass;
+
     private float verticalInput;
     private float turnInput;
     private bool isSprinting;
@@ -23,6 +27,17 @@ public class WheeledRobotMovement : MonoBehaviour
         rb = GetComponent<Rigidbody>();
         rb.freezeRotation = true;
         energySystem = GetComponent<RobotEnergy>();
+
+        // Automatically link the circular compass to this robot body's Transform
+        if (compass == null)
+        {
+            compass = FindFirstObjectByType<CircularCompass>();
+        }
+
+        if (compass != null)
+        {
+            compass.SetTarget(transform);
+        }
     }
 
     private void Update()
