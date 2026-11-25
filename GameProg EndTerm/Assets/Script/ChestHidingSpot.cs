@@ -11,6 +11,9 @@ public class ChestHidingSpot : MonoBehaviour
     [Header("Controls & Settings")]
     public KeyCode interactKey = KeyCode.E;
     public KeyCode peekKey = KeyCode.Space;
+    public float interactRange = 3.5f;
+    [Tooltip("Fine-tune the center point of the interaction sphere and Gizmo in local space.")]
+    public Vector3 centerOffset = Vector3.zero;
     public float peekSpeed = 8f;
 
     [Header("Peek Camera Rotation")]
@@ -24,11 +27,39 @@ public class ChestHidingSpot : MonoBehaviour
     [Tooltip("Maximum up/down rotation angle (in degrees) from the peek center.")]
     public float maxPeekPitch = 30f;
 
+    [Header("Audio")]
+    [Tooltip("Sounds played at random when the player enters the chest.")]
+    public AudioClip[] enterChestSounds;
+    [Tooltip("Sounds played at random when the player exits the chest.")]
+    public AudioClip[] exitChestSounds;
+    [Range(0f, 1f)]
+    public float chestInteractVolume = 1f;
+
+    [Tooltip("Sounds played at random when the robot peeks out of the chest.")]
+    public AudioClip[] peekOutSounds;
+    [Tooltip("Sounds played at random when the robot ducks back inside the chest.")]
+    public AudioClip[] peekInSounds;
+    [Range(0f, 1f)]
+    public float peekSoundVolume = 1f;
+
+    [Tooltip("Sound played the moment overheating starts.")]
+    public AudioClip overheatStartSound;
+    [Range(0f, 1f)]
+    public float overheatSoundVolume = 1f;
+    [Tooltip("Loop the overheat sound while inside the chest.")]
+    public bool loopOverheatSound = false;
+
+    [Tooltip("Optional: Assign a dedicated AudioSource on the chest, or leave empty to auto-create one.")]
+    public AudioSource chestAudioSource;
+
     [Header("Overheat Mechanics")]
+    [Tooltip("Leave empty on Prefabs to auto-find an object named 'OverheatUI' or 'OverheatCanvas' in the scene.")]
     public GameObject overheatUI;
     public Slider overheatSlider;
     public Image overheatFillImage;
     public Gradient overheatGradient;
+    [Tooltip("Show the Overheat UI immediately when entering the chest instead of waiting for Delay Before Overheat.")]
+    public bool showUIImmediatelyOnEnter = true;
     public float delayBeforeOverheat = 5f;
     public float heatPerSecond = 15f;
     public float cooldownPerSecond = 10f;
@@ -41,6 +72,12 @@ public class ChestHidingSpot : MonoBehaviour
 
     private bool isPlayerInRange = false;
     private bool isHiding = false;
+    private bool wasPeeking = false;
+    private bool hasPlayedOverheatSound = false;
+    private bool ownsOverheatUI = false;
+
+    // Dedicated AudioSource for overheat
+    private AudioSource overheatAudioSource;
 
     // References
     private GameObject playerRoot;
@@ -72,11 +109,52 @@ public class ChestHidingSpot : MonoBehaviour
     // Tracks the exact colliders that need to be turned back on
     private List<Collider> collidersToRestore = new List<Collider>();
 
+    private void Start()
+    {
+        if (chestAudioSource == null)
+        {
+            chestAudioSource = GetComponent<AudioSource>();
+            if (chestAudioSource == null)
+            {
+                chestAudioSource = gameObject.AddComponent<AudioSource>();
+                chestAudioSource.playOnAwake = false;
+                chestAudioSource.spatialBlend = 1f;
+            }
+        }
+
+        overheatAudioSource = gameObject.AddComponent<AudioSource>();
+        overheatAudioSource.playOnAwake = false;
+        overheatAudioSource.spatialBlend = chestAudioSource.spatialBlend;
+
+        FindAndCachePlayer();
+        FindAndCacheOverheatUI();
+    }
+
     private void Update()
     {
+        // --- PROXIMITY CHECK (CENTERED ON CHEST) ---
+        if (!isHiding)
+        {
+            if (playerRoot == null)
+            {
+                FindAndCachePlayer();
+            }
+
+            if (playerRoot != null)
+            {
+                float distance = Vector3.Distance(GetChestCenter(), playerRoot.transform.position);
+                isPlayerInRange = distance <= interactRange;
+            }
+            else
+            {
+                isPlayerInRange = false;
+            }
+        }
+
         if (Input.GetKeyDown(interactKey))
         {
-            if (isHiding) ExitChest();
+            // Voluntary exit when pressing interactKey (E)
+            if (isHiding) ExitChest(true);
             else if (isPlayerInRange) EnterChest();
         }
 
@@ -87,13 +165,20 @@ public class ChestHidingSpot : MonoBehaviour
 
             if (timeHidden >= delayBeforeOverheat)
             {
+                if (!hasPlayedOverheatSound)
+                {
+                    hasPlayedOverheatSound = true;
+                    PlayOverheatStartSound();
+                }
+
                 currentOverheat += heatPerSecond * Time.deltaTime;
 
                 if (currentOverheat >= 100f)
                 {
                     currentOverheat = 100f;
                     Debug.Log("Overheated! Kicked out of chest.");
-                    ExitChest();
+                    // Forced exit: overheat sound keeps playing
+                    ExitChest(false);
                 }
             }
         }
@@ -106,10 +191,12 @@ public class ChestHidingSpot : MonoBehaviour
             }
         }
 
-        // --- UI VISIBILITY MANAGEMENT ---
-        if (overheatUI != null)
+        // --- UI VISIBILITY MANAGEMENT (ONLY FOR THE CHEST IN USE) ---
+        if (ownsOverheatUI && overheatUI != null)
         {
-            bool shouldShowUI = currentOverheat > 0f || (isHiding && timeHidden >= delayBeforeOverheat);
+            bool shouldShowUI = showUIImmediatelyOnEnter
+                ? (isHiding || currentOverheat > 0f)
+                : (currentOverheat > 0f || (isHiding && timeHidden >= delayBeforeOverheat));
 
             if (overheatUI.activeSelf != shouldShowUI)
             {
@@ -125,12 +212,25 @@ public class ChestHidingSpot : MonoBehaviour
                     overheatFillImage.color = overheatGradient.Evaluate(currentOverheat / 100f);
                 }
             }
+
+            if (!shouldShowUI && !isHiding)
+            {
+                ownsOverheatUI = false;
+            }
         }
 
         // --- PEEKING & CAMERA MOVEMENT / ROTATION ---
         if (isHiding && playerCamera != null && hidePosition != null && peekPosition != null)
         {
             bool isPeeking = Input.GetKey(peekKey);
+
+            // Trigger peek-out or peek-in sound only when the peeking state changes
+            if (isPeeking != wasPeeking)
+            {
+                wasPeeking = isPeeking;
+                PlayRandomChestSound(isPeeking ? peekOutSounds : peekInSounds, peekSoundVolume);
+            }
+
             Transform targetTransform = isPeeking ? peekPosition : hidePosition;
 
             if (baseVisionLight != null)
@@ -172,15 +272,159 @@ public class ChestHidingSpot : MonoBehaviour
         }
     }
 
+    private void PlayRandomChestSound(AudioClip[] clips, float volume)
+    {
+        if (clips == null || clips.Length == 0 || chestAudioSource == null) return;
+
+        AudioClip selectedClip = clips[Random.Range(0, clips.Length)];
+        if (selectedClip != null)
+        {
+            chestAudioSource.PlayOneShot(selectedClip, volume);
+        }
+    }
+
+    private void PlayOverheatStartSound()
+    {
+        if (overheatStartSound == null || overheatAudioSource == null) return;
+
+        overheatAudioSource.clip = overheatStartSound;
+        overheatAudioSource.volume = overheatSoundVolume;
+        overheatAudioSource.loop = loopOverheatSound;
+        overheatAudioSource.Play();
+    }
+
+    private void StopOverheatSound()
+    {
+        if (overheatAudioSource != null && overheatAudioSource.isPlaying)
+        {
+            overheatAudioSource.Stop();
+        }
+    }
+
+    private Vector3 GetChestCenter()
+    {
+        Vector3 baseCenter = transform.position;
+
+        Collider[] colliders = GetComponentsInChildren<Collider>();
+        if (colliders.Length > 0)
+        {
+            Bounds combinedBounds = colliders[0].bounds;
+            for (int i = 1; i < colliders.Length; i++)
+            {
+                combinedBounds.Encapsulate(colliders[i].bounds);
+            }
+            baseCenter = combinedBounds.center;
+        }
+        else
+        {
+            Renderer[] renderers = GetComponentsInChildren<Renderer>();
+            if (renderers.Length > 0)
+            {
+                Bounds combinedBounds = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++)
+                {
+                    combinedBounds.Encapsulate(renderers[i].bounds);
+                }
+                baseCenter = combinedBounds.center;
+            }
+        }
+
+        return baseCenter + transform.TransformDirection(centerOffset);
+    }
+
+    private void FindAndCacheOverheatUI()
+    {
+        if (overheatUI == null)
+        {
+            Transform[] allTransforms = Resources.FindObjectsOfTypeAll<Transform>();
+            foreach (Transform t in allTransforms)
+            {
+                if (!t.gameObject.scene.IsValid()) continue;
+
+                string lowerName = t.name.ToLower();
+                if (lowerName.Contains("overheatui") || lowerName.Contains("overheatpanel") || lowerName.Contains("overheatcanvas"))
+                {
+                    overheatUI = t.gameObject;
+                    break;
+                }
+            }
+        }
+
+        if (overheatUI != null)
+        {
+            if (overheatSlider == null)
+            {
+                overheatSlider = overheatUI.GetComponentInChildren<Slider>(true);
+            }
+
+            if (overheatFillImage == null && overheatSlider != null && overheatSlider.fillRect != null)
+            {
+                overheatFillImage = overheatSlider.fillRect.GetComponent<Image>();
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[ChestHidingSpot] Could not find Overheat UI for {name}. Assign it in the Inspector or name the UI object 'OverheatUI'.");
+        }
+    }
+
+    private void FindAndCachePlayer()
+    {
+        GameObject foundPlayer = GameObject.FindGameObjectWithTag("Player");
+        if (foundPlayer == null) return;
+
+        playerRoot = foundPlayer.transform.root.gameObject;
+        playerRb = playerRoot.GetComponent<Rigidbody>();
+
+        movementScript = playerRoot.GetComponent<WheeledRobotMovement>();
+        noiseScript = playerRoot.GetComponent<PlayerNoiseEmitter>();
+
+        Transform[] allChildren = playerRoot.GetComponentsInChildren<Transform>(true);
+        foreach (Transform child in allChildren)
+        {
+            if (child.name.ToLower().Contains("kalibot") || child.name.ToLower().Contains("body"))
+            {
+                robotBody = child.gameObject;
+                break;
+            }
+        }
+
+        Camera cam = playerRoot.GetComponentInChildren<Camera>();
+        if (cam != null)
+        {
+            playerCamera = cam.transform;
+            cameraScript = cam.GetComponent<RobotHeadCamera>();
+            cameraFlashlight = playerCamera.GetComponentInChildren<Light>(true);
+        }
+
+        Light[] allLights = playerRoot.GetComponentsInChildren<Light>(true);
+        foreach (Light l in allLights)
+        {
+            if (l.gameObject.name.Contains("BaseVisionLight"))
+            {
+                baseVisionLight = l;
+                break;
+            }
+        }
+    }
+
     private void EnterChest()
     {
+        if (hidePosition == null || peekPosition == null) return;
+
+        if (overheatUI == null) FindAndCacheOverheatUI();
+
         MonsterAI[] allMonsters = UnityEngine.Object.FindObjectsByType<MonsterAI>(FindObjectsInactive.Exclude);
         MonsterVisionAI[] allVisionMonsters = UnityEngine.Object.FindObjectsByType<MonsterVisionAI>(FindObjectsInactive.Exclude);
 
-        if (hidePosition == null || peekPosition == null) return;
         isHiding = true;
+        wasPeeking = false;
+        hasPlayedOverheatSound = false;
+        ownsOverheatUI = true;
         currentPeekYaw = 0f;
         currentPeekPitch = 0f;
+
+        PlayRandomChestSound(enterChestSounds, chestInteractVolume);
 
         if (currentOverheat > 0f)
         {
@@ -189,6 +433,19 @@ public class ChestHidingSpot : MonoBehaviour
         else
         {
             timeHidden = 0f;
+        }
+
+        if (overheatUI != null && showUIImmediatelyOnEnter)
+        {
+            overheatUI.SetActive(true);
+            if (overheatSlider != null)
+            {
+                overheatSlider.value = currentOverheat;
+                if (overheatFillImage != null)
+                {
+                    overheatFillImage.color = overheatGradient.Evaluate(currentOverheat / 100f);
+                }
+            }
         }
 
         if (playerCamera != null)
@@ -251,20 +508,35 @@ public class ChestHidingSpot : MonoBehaviour
             playerRb.isKinematic = true;
         }
 
+        Vector3 chestCenter = GetChestCenter();
         foreach (MonsterAI monster in allMonsters)
         {
-            monster.InvestigateHiddenPlayer(transform.position);
+            monster.InvestigateHiddenPlayer(chestCenter);
         }
 
         foreach (MonsterVisionAI monster in allVisionMonsters)
         {
-            monster.InvestigateHiddenPlayer(transform.position);
+            monster.InvestigateHiddenPlayer(chestCenter);
         }
     }
 
-    private void ExitChest()
+    private void ExitChest(bool voluntaryExit)
     {
+        if (voluntaryExit)
+        {
+            StopOverheatSound();
+        }
+        else if (overheatAudioSource != null)
+        {
+            // Ensure it finishes playing its current run instead of looping forever
+            overheatAudioSource.loop = false;
+        }
+
+        PlayRandomChestSound(exitChestSounds, chestInteractVolume);
+
         isHiding = false;
+        wasPeeking = false;
+        hasPlayedOverheatSound = false;
         currentPeekYaw = 0f;
         currentPeekPitch = 0f;
 
@@ -300,57 +572,11 @@ public class ChestHidingSpot : MonoBehaviour
         if (cameraScript != null) cameraScript.enabled = true;
     }
 
-    private void OnTriggerEnter(Collider other)
+    private void OnDrawGizmosSelected()
     {
-        Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
-
-        if (rootTransform.CompareTag("Player") || other.CompareTag("Player"))
-        {
-            isPlayerInRange = true;
-            playerRoot = rootTransform.gameObject;
-            playerRb = playerRoot.GetComponent<Rigidbody>();
-
-            movementScript = playerRoot.GetComponent<WheeledRobotMovement>();
-            noiseScript = playerRoot.GetComponent<PlayerNoiseEmitter>();
-
-            Transform[] allChildren = playerRoot.GetComponentsInChildren<Transform>(true);
-            foreach (Transform child in allChildren)
-            {
-                if (child.name.ToLower().Contains("kalibot") || child.name.ToLower().Contains("body"))
-                {
-                    robotBody = child.gameObject;
-                    break;
-                }
-            }
-
-            Camera cam = playerRoot.GetComponentInChildren<Camera>();
-            if (cam != null)
-            {
-                playerCamera = cam.transform;
-                cameraScript = cam.GetComponent<RobotHeadCamera>();
-                cameraFlashlight = playerCamera.GetComponentInChildren<Light>(true);
-            }
-
-            Light[] allLights = playerRoot.GetComponentsInChildren<Light>(true);
-            foreach (Light l in allLights)
-            {
-                if (l.gameObject.name.Contains("BaseVisionLight"))
-                {
-                    baseVisionLight = l;
-                    break;
-                }
-            }
-        }
-    }
-
-    private void OnTriggerExit(Collider other)
-    {
-        if (isHiding) return;
-
-        Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
-        if (playerRoot != null && (rootTransform.gameObject == playerRoot || other.CompareTag("Player")))
-        {
-            isPlayerInRange = false;
-        }
+        Vector3 center = GetChestCenter();
+        Gizmos.color = Color.cyan;
+        Gizmos.DrawWireSphere(center, interactRange);
+        Gizmos.DrawSphere(center, 0.1f);
     }
 }

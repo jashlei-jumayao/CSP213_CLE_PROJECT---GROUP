@@ -12,15 +12,30 @@ public class ResourceTracker : MonoBehaviour
     public TextMeshProUGUI coalCounterText;
 
     [Header("Fuel Values")]
-    public float leafEnergyValue = 5f; 
-    public float coalEnergyValue = 20f; 
+    public float leafEnergyValue = 5f;
+    public float coalEnergyValue = 20f;
+
+    [Header("Audio")]
+    public AudioClip burnSound;
+    [Range(0f, 1f)]
+    public float burnVolume = 1f;
+    [Tooltip("Optional: Assign a dedicated AudioSource, or leave empty to create one automatically.")]
+    public AudioSource burnAudioSource;
 
     private RobotEnergy energySystem;
 
     private void Start()
     {
-
         energySystem = GetComponent<RobotEnergy>();
+
+        if (burnAudioSource == null)
+        {
+            burnAudioSource = gameObject.AddComponent<AudioSource>();
+            burnAudioSource.playOnAwake = false;
+            burnAudioSource.loop = false;
+            burnAudioSource.spatialBlend = 0f;
+        }
+
         UpdateIcons();
     }
 
@@ -36,6 +51,7 @@ public class ResourceTracker : MonoBehaviour
             {
                 leaves--;
                 UpdateIcons();
+                PlayBurnSound();
             }
         }
 
@@ -46,7 +62,21 @@ public class ResourceTracker : MonoBehaviour
             {
                 coal--;
                 UpdateIcons();
+                PlayBurnSound();
             }
+        }
+    }
+
+    private void PlayBurnSound()
+    {
+        if (burnSound == null || burnAudioSource == null) return;
+
+        // Only start playing if the previous burn sound has completely finished
+        if (!burnAudioSource.isPlaying)
+        {
+            burnAudioSource.clip = burnSound;
+            burnAudioSource.volume = burnVolume;
+            burnAudioSource.Play();
         }
     }
 

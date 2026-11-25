@@ -3,12 +3,33 @@ using UnityEngine.AI;
 
 public class MonsterVisionAI : MonoBehaviour
 {
-    public enum MonsterState { Wandering, Investigating, Sweeping }
+    public enum MonsterState { Wandering, Investigating, Sweeping, Retreating }
 
     [Header("Movement Speeds")]
     public float wanderSpeed = 2.0f;     // Slow, idle pacing
     public float suspicionSpeed = 3.5f;  // Brisk walk to investigate last seen spot
     public float huntSpeed = 7.0f;       // Full sprint to chase the player on sight
+    public float retreatSpeed = 7.0f;    // Sprint speed when fleeing after 7 flashes
+
+    [Header("Flashlight Banish Mechanic")]
+    [Tooltip("Number of direct flashlight flashes needed to make the monster turn back and despawn.")]
+    public int flashesToBanish = 7;
+    [Tooltip("Key used to toggle/flash the flashlight.")]
+    public KeyCode flashlightKey = KeyCode.F;
+    [Tooltip("How wide the flashlight beam cone is when checking if the player aimed at the monster.")]
+    public float flashBeamAngle = 35f;
+    [Tooltip("Maximum distance at which flashing the light hits the monster.")]
+    public float maxFlashDistance = 35f;
+    [Tooltip("Minimum delay between counted flashes so a single press isn't double-counted.")]
+    public float flashHitCooldown = 0.25f;
+    [Tooltip("How long the monster runs away before despawning (despawns sooner if out of sight).")]
+    public float retreatDuration = 3.5f;
+
+    [Header("Flash Banish Audio (Optional)")]
+    public AudioClip flashFlinchSound;
+    public AudioClip banishRetreatSound;
+    [Range(0f, 1f)]
+    public float flashAudioVolume = 1f;
 
     [Header("Wander Settings")]
     public float wanderRadius = 15f;
@@ -28,13 +49,21 @@ public class MonsterVisionAI : MonoBehaviour
     public float sweepWaitTime = 1f;     // How long it pauses at each search point
 
     private NavMeshAgent agent;
+    private AudioSource audioSource;
     private MonsterState currentState = MonsterState.Wandering;
 
     private Transform targetPlayer;
+    private FlashlightController playerFlashlight;
+    private VisionMonsterLightSpawner lightSpawner;
+
     private Vector3 lastSeenPosition;
     private float lastSeenTime;
     private float waitTimer;
     private int sweepsRemaining;
+
+    private int currentFlashHits = 0;
+    private float lastFlashHitTime = -999f;
+    private float retreatTimer = 0f;
 
     [Header("Post-Attack Settings")]
     private bool isIgnoringPlayer = false;
@@ -43,16 +72,51 @@ public class MonsterVisionAI : MonoBehaviour
     // --- Flag to prevent attacking the player when hidden ---
     private bool isPlayerHidden = false;
 
+    private void Awake()
+    {
+        agent = GetComponent<NavMeshAgent>();
+        audioSource = GetComponent<AudioSource>();
+        if (audioSource == null)
+        {
+            audioSource = gameObject.AddComponent<AudioSource>();
+            audioSource.playOnAwake = false;
+            audioSource.spatialBlend = 1f;
+        }
+    }
+
+    private void OnEnable()
+    {
+        currentFlashHits = 0;
+        lastFlashHitTime = -999f;
+        retreatTimer = 0f;
+        isPlayerHidden = false;
+        isIgnoringPlayer = false;
+
+        if (agent == null) agent = GetComponent<NavMeshAgent>();
+        CachePlayerReferences();
+        ReturnToWandering();
+    }
 
     private void Start()
     {
-        agent = GetComponent<NavMeshAgent>();
+        CachePlayerReferences();
+    }
 
-        // Automatically find the player by tag if not assigned
-        GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
-        if (playerObj != null) targetPlayer = playerObj.transform;
+    private void CachePlayerReferences()
+    {
+        if (targetPlayer == null)
+        {
+            GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
+            if (playerObj != null) targetPlayer = playerObj.transform.root;
+        }
 
-        ReturnToWandering();
+        if (targetPlayer != null)
+        {
+            if (playerFlashlight == null)
+                playerFlashlight = targetPlayer.GetComponentInChildren<FlashlightController>(true);
+            if (lightSpawner == null)
+                lightSpawner = targetPlayer.GetComponentInChildren<VisionMonsterLightSpawner>(true);
+        }
     }
 
     // --- Call this from the Chest script to instantly reset the monster ---
@@ -60,7 +124,10 @@ public class MonsterVisionAI : MonoBehaviour
     {
         Debug.Log("Player hid! Vision Monster drops aggro and wanders immediately.");
         isPlayerHidden = true;
-        ReturnToWandering();
+        if (currentState != MonsterState.Retreating)
+        {
+            ReturnToWandering();
+        }
     }
 
     // --- Call this from the Chest script when the player exits ---
@@ -69,9 +136,10 @@ public class MonsterVisionAI : MonoBehaviour
         isPlayerHidden = false;
     }
 
-    // --- NEW: Forces the monster to ignore the player and walk away after an attack ---
+    // --- Forces the monster to ignore the player and walk away after an attack ---
     public void LoseInterestForSeconds(float duration)
     {
+        if (currentState == MonsterState.Retreating) return;
         if (ignoreRoutine != null) StopCoroutine(ignoreRoutine);
         ignoreRoutine = StartCoroutine(IgnorePlayerRoutine(duration));
     }
@@ -81,7 +149,7 @@ public class MonsterVisionAI : MonoBehaviour
         Debug.Log("Monster is satisfied and wandering away!");
         isIgnoringPlayer = true;
 
-        ReturnToWandering(); // Instantly drop aggro and pick a random spot to walk to
+        ReturnToWandering();
 
         yield return new WaitForSeconds(duration);
 
@@ -91,6 +159,14 @@ public class MonsterVisionAI : MonoBehaviour
 
     private void Update()
     {
+        if (currentState == MonsterState.Retreating)
+        {
+            HandleRetreating();
+            return;
+        }
+
+        CheckForFlashlightHit();
+
         // Check for player vision only if the player is NOT hidden and NOT being ignored
         if (!isPlayerHidden && !isIgnoringPlayer)
         {
@@ -111,24 +187,166 @@ public class MonsterVisionAI : MonoBehaviour
         }
     }
 
+    private void CheckForFlashlightHit()
+    {
+        if (isPlayerHidden || Time.timeScale == 0f) return;
+        if (!Input.GetKeyDown(flashlightKey)) return;
+        if (Time.time - lastFlashHitTime < flashHitCooldown) return;
+
+        CachePlayerReferences();
+
+        // Only count the press if the flashlight actually turned ON (has energy & isn't already on)
+        if (playerFlashlight == null || !playerFlashlight.IsFlashlightOn) return;
+
+        Transform beamOrigin = playerFlashlight.robotFlashlight != null
+            ? playerFlashlight.robotFlashlight.transform
+            : (Camera.main != null ? Camera.main.transform : null);
+
+        if (beamOrigin == null) return;
+
+        Vector3 monsterTargetPoint = transform.position + Vector3.up * 1.2f;
+        Vector3 toMonster = monsterTargetPoint - beamOrigin.position;
+        float distance = toMonster.magnitude;
+
+        if (distance > maxFlashDistance) return;
+
+        float beamAngle = playerFlashlight.robotFlashlight != null
+            ? Mathf.Max(flashBeamAngle, playerFlashlight.robotFlashlight.spotAngle * 0.6f)
+            : flashBeamAngle;
+
+        if (Vector3.Angle(beamOrigin.forward, toMonster.normalized) > beamAngle) return;
+
+        // Ensure no walls or obstacles block the flashlight beam
+        if (Physics.Raycast(beamOrigin.position, toMonster.normalized, distance, obstacleLayer)) return;
+
+        RegisterFlashHit();
+    }
+
+    private void RegisterFlashHit()
+    {
+        lastFlashHitTime = Time.time;
+        currentFlashHits++;
+
+        Debug.Log($"Vision Monster flashed! ({currentFlashHits}/{flashesToBanish})");
+
+        if (currentFlashHits >= flashesToBanish)
+        {
+            StartRetreatAndDespawn();
+        }
+        else if (flashFlinchSound != null && audioSource != null)
+        {
+            audioSource.PlayOneShot(flashFlinchSound, flashAudioVolume);
+        }
+    }
+
+    private void StartRetreatAndDespawn()
+    {
+        currentState = MonsterState.Retreating;
+        retreatTimer = 0f;
+
+        if (banishRetreatSound != null && audioSource != null)
+        {
+            audioSource.PlayOneShot(banishRetreatSound, flashAudioVolume);
+        }
+
+        // Pick a destination directly away from the player
+        Vector3 awayDir = targetPlayer != null
+            ? (transform.position - targetPlayer.position).normalized
+            : -transform.forward;
+        awayDir.y = 0f;
+        if (awayDir.sqrMagnitude < 0.01f) awayDir = -transform.forward;
+
+        Vector3 retreatTarget = transform.position + awayDir * 25f;
+
+        if (agent != null && agent.isOnNavMesh)
+        {
+            agent.speed = retreatSpeed;
+            if (NavMesh.SamplePosition(retreatTarget, out NavMeshHit hit, 15f, NavMesh.AllAreas))
+            {
+                agent.SetDestination(hit.position);
+            }
+            else
+            {
+                agent.SetDestination(retreatTarget);
+            }
+        }
+        else
+        {
+            transform.rotation = Quaternion.LookRotation(awayDir);
+        }
+    }
+
+    private void HandleRetreating()
+    {
+        retreatTimer += Time.deltaTime;
+
+        // Keep running away if the agent already reached its first retreat point
+        if (agent != null && agent.isOnNavMesh && !agent.pathPending && agent.remainingDistance <= agent.stoppingDistance + 0.5f)
+        {
+            Vector3 awayDir = targetPlayer != null
+                ? (transform.position - targetPlayer.position).normalized
+                : transform.forward;
+            awayDir.y = 0f;
+            if (NavMesh.SamplePosition(transform.position + awayDir * 20f, out NavMeshHit hit, 15f, NavMesh.AllAreas))
+            {
+                agent.SetDestination(hit.position);
+            }
+        }
+
+        // Despawn once it has turned and retreated for a few seconds (or sooner if out of player's camera view)
+        bool isVisible = IsVisibleToMainCamera();
+        if ((retreatTimer >= 1.25f && !isVisible) || retreatTimer >= retreatDuration)
+        {
+            DespawnSelf();
+        }
+    }
+
+    private bool IsVisibleToMainCamera()
+    {
+        Camera cam = Camera.main;
+        if (cam == null) return false;
+
+        Vector3 vp = cam.WorldToViewportPoint(transform.position + Vector3.up * 1.2f);
+        if (vp.z <= 0f || vp.x < 0f || vp.x > 1f || vp.y < 0f || vp.y > 1f) return false;
+
+        Vector3 toMonster = (transform.position + Vector3.up * 1.2f) - cam.transform.position;
+        if (Physics.Raycast(cam.transform.position, toMonster.normalized, toMonster.magnitude, obstacleLayer))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private void DespawnSelf()
+    {
+        currentFlashHits = 0;
+        currentState = MonsterState.Wandering;
+
+        if (lightSpawner != null)
+        {
+            lightSpawner.ForceDespawnVisionMonster();
+        }
+        else
+        {
+            gameObject.SetActive(false);
+        }
+    }
+
     private void CheckForPlayerVision()
     {
         if (targetPlayer == null) return;
 
-        // Check if player is within view radius
         float distanceToPlayer = Vector3.Distance(transform.position, targetPlayer.position);
         if (distanceToPlayer <= viewRadius)
         {
             Vector3 dirToPlayer = (targetPlayer.position - transform.position).normalized;
 
-            // Check if player is within the view angle field of view
             if (Vector3.Angle(transform.forward, dirToPlayer) < viewAngle / 2f)
             {
-                // Raycast to ensure no walls are blocking line of sight
                 float distanceToTarget = Vector3.Distance(transform.position, targetPlayer.position);
                 if (!Physics.Raycast(transform.position + Vector3.up, dirToPlayer, distanceToTarget, obstacleLayer))
                 {
-                    // Player is spotted!
                     SpotPlayer(targetPlayer.position);
                 }
             }
@@ -144,7 +362,7 @@ public class MonsterVisionAI : MonoBehaviour
         if (agent != null && agent.isOnNavMesh)
         {
             agent.SetDestination(lastSeenPosition);
-            agent.speed = huntSpeed; // Sprint directly at the player/last seen spot
+            agent.speed = huntSpeed;
         }
     }
 
@@ -163,7 +381,6 @@ public class MonsterVisionAI : MonoBehaviour
 
     private void HandleInvestigating()
     {
-        // If we currently see the player (and they aren't hidden/ignored), keep updating destination and sprinting
         if (!isPlayerHidden && !isIgnoringPlayer && targetPlayer != null && Vector3.Distance(transform.position, targetPlayer.position) <= viewRadius)
         {
             Vector3 dirToPlayer = (targetPlayer.position - transform.position).normalized;
@@ -175,12 +392,11 @@ public class MonsterVisionAI : MonoBehaviour
                     lastSeenTime = Time.time;
                     agent.SetDestination(lastSeenPosition);
                     agent.speed = huntSpeed;
-                    return; // Still actively tracking live vision
+                    return;
                 }
             }
         }
 
-        // If line of sight is broken, check timeout
         float timeSinceLostSight = Time.time - lastSeenTime;
 
         if (timeSinceLostSight >= sightLoseTimeout)
@@ -189,7 +405,6 @@ public class MonsterVisionAI : MonoBehaviour
             return;
         }
 
-        // When it reaches the last known position, begin Area Sweep
         if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance)
         {
             StartSweeping();
@@ -202,7 +417,7 @@ public class MonsterVisionAI : MonoBehaviour
         sweepsRemaining = sweepCount;
         waitTimer = 0f;
 
-        agent.speed = suspicionSpeed; // Slow down to carefully inspect the area
+        agent.speed = suspicionSpeed;
         PickRandomDestination(sweepRadius);
     }
 
@@ -239,6 +454,8 @@ public class MonsterVisionAI : MonoBehaviour
 
     private void PickRandomDestination(float radius)
     {
+        if (agent == null || !agent.isOnNavMesh) return;
+
         Vector3 randomDirection = Random.insideUnitSphere * radius;
         Vector3 searchCenter = (currentState == MonsterState.Sweeping) ? lastSeenPosition : transform.position;
         randomDirection += searchCenter;
@@ -261,14 +478,15 @@ public class MonsterVisionAI : MonoBehaviour
         Gizmos.DrawRay(transform.position + Vector3.up, leftRayDirection * viewRadius);
         Gizmos.DrawRay(transform.position + Vector3.up, rightRayDirection * viewRadius);
     }
+
     public void InvestigateHiddenPlayer(Vector3 hideLocation)
     {
+        if (currentState == MonsterState.Retreating) return;
+
         Debug.Log("Player vanished! Monster is searching the area...");
 
-        // Use lastSeenPosition for Vision AI, and lastHeardPosition for Sound AI
-        lastSeenPosition = hideLocation; // Change to lastHeardPosition in MonsterAI
+        lastSeenPosition = hideLocation;
 
-        // Instantly transition to sweeping the area around the chest
         currentState = MonsterState.Sweeping;
         sweepsRemaining = sweepCount;
         waitTimer = 0f;

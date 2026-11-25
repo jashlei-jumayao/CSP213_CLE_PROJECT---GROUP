@@ -17,6 +17,8 @@ public class RobotEnergy : MonoBehaviour
 
     [Header("UI References")]
     public TextMeshProUGUI energyText;
+    [Tooltip("Order from Empty to Full: [0] = 0% (Empty), [1] = 1-25%, [2] = 26-50%, [3] = 51-75%, [4] = 76-100%.")]
+    public GameObject[] batteryStateImages;
 
     [Header("Audio References")]
     public AudioClip recoveryStartSound;
@@ -159,6 +161,34 @@ public class RobotEnergy : MonoBehaviour
         if (energyText != null)
         {
             energyText.text = "Energy: " + Mathf.CeilToInt(currentEnergy).ToString();
+        }
+
+        UpdateBatteryStateObjects();
+    }
+
+    private void UpdateBatteryStateObjects()
+    {
+        if (batteryStateImages == null || batteryStateImages.Length == 0) return;
+
+        int activeIndex = 0;
+
+        if (currentEnergy > 0f && batteryStateImages.Length > 1)
+        {
+            int chargedStates = batteryStateImages.Length - 1;
+            float normalized = maxEnergy > 0f ? Mathf.Clamp01(currentEnergy / maxEnergy) : 0f;
+            activeIndex = Mathf.Clamp(Mathf.CeilToInt(normalized * chargedStates), 1, chargedStates);
+        }
+
+        for (int i = 0; i < batteryStateImages.Length; i++)
+        {
+            if (batteryStateImages[i] != null)
+            {
+                bool shouldBeActive = (i == activeIndex);
+                if (batteryStateImages[i].activeSelf != shouldBeActive)
+                {
+                    batteryStateImages[i].SetActive(shouldBeActive);
+                }
+            }
         }
     }
 

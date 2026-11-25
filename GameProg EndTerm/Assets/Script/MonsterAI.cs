@@ -11,8 +11,8 @@ public class MonsterAI : MonoBehaviour
     public Transform modelTransform;
     [Tooltip("90 fixes walking to the right; use -90 if it faces the opposite side.")]
     public float modelYRotationOffset = 90f;
-    [Tooltip("How fast the monster turns to face its movement direction.")]
-    public float turnSpeed = 12f;
+    [Tooltip("How fast the monster turns in degrees per second (lower = heavier, smoother turns).")]
+    public float turnSpeed = 180f;
 
     [Header("Movement Speeds (Match Blend Tree Thresholds)")]
     [Tooltip("Matches Armature|Monster Walk threshold (2.0)")]
@@ -20,6 +20,12 @@ public class MonsterAI : MonoBehaviour
     public float suspicionSpeed = 3.5f;
     [Tooltip("Matches Armature|Monster Run threshold (7.0)")]
     public float huntSpeed = 7.0f;
+
+    [Header("Continuous Movement Settings")]
+    [Tooltip("How close to a waypoint before immediately picking the next one so it never slows down.")]
+    public float waypointSwitchDistance = 0.75f;
+    [Tooltip("If the monster's speed drops below this for too long, pick a new path immediately.")]
+    public float stuckTimeout = 0.5f;
 
     [Header("Suspicion Meter Settings")]
     [Tooltip("How much noise it takes to trigger an investigation (e.g., 100)")]
@@ -41,7 +47,6 @@ public class MonsterAI : MonoBehaviour
 
     [Header("Wander Settings")]
     public float wanderRadius = 15f;
-    public float wanderWaitTime = 2f;
 
     [Header("Investigation Settings")]
     public float loudNoiseThreshold = 20f;
@@ -50,7 +55,6 @@ public class MonsterAI : MonoBehaviour
     [Header("Area Sweep Settings")]
     public int sweepCount = 3;
     public float sweepRadius = 5f;
-    public float sweepWaitTime = 1f;
 
     private NavMeshAgent agent;
     private AudioSource audioSource;
@@ -60,15 +64,15 @@ public class MonsterAI : MonoBehaviour
     private Vector3 lastHeardPosition;
     private float lastSoundTime;
     private float lastAggressionSoundTime = -999f;
-    private float waitTimer;
+    private float stuckTimer = 0f;
     private int sweepsRemaining;
 
     private void Awake()
     {
         agent = GetComponent<NavMeshAgent>();
         agent.updateRotation = false;
+        agent.autoBraking = false;
 
-        // Reuse existing AudioSource or create a 3D one on the monster
         audioSource = GetComponent<AudioSource>();
         if (audioSource == null)
         {
@@ -99,11 +103,23 @@ public class MonsterAI : MonoBehaviour
     private void OnEnable()
     {
         lastAggressionSoundTime = -999f;
+        stuckTimer = 0f;
+        if (agent != null && agent.isOnNavMesh)
+        {
+            agent.isStopped = false;
+        }
         ReturnToWandering();
     }
 
     private void Update()
     {
+        if (agent == null || !agent.isOnNavMesh) return;
+
+        if (agent.isStopped)
+        {
+            agent.isStopped = false;
+        }
+
         if (currentState == MonsterState.Wandering && currentSuspicion > 0f)
         {
             currentSuspicion -= suspicionDecayRate * Time.deltaTime;
@@ -122,6 +138,8 @@ public class MonsterAI : MonoBehaviour
                 HandleSweeping();
                 break;
         }
+
+        EnsureNeverStopped();
     }
 
     private void LateUpdate()
@@ -129,15 +147,63 @@ public class MonsterAI : MonoBehaviour
         RotateTowardMovement();
     }
 
+    private void EnsureNeverStopped()
+    {
+        if (agent.pathPending) return;
+
+        if (!agent.hasPath || agent.pathStatus == NavMeshPathStatus.PathInvalid)
+        {
+            PickFallbackDestination();
+            return;
+        }
+
+        if (agent.velocity.sqrMagnitude < 0.05f)
+        {
+            stuckTimer += Time.deltaTime;
+            if (stuckTimer >= stuckTimeout)
+            {
+                stuckTimer = 0f;
+                PickFallbackDestination();
+            }
+        }
+        else
+        {
+            stuckTimer = 0f;
+        }
+    }
+
+    private void PickFallbackDestination()
+    {
+        if (currentState == MonsterState.Sweeping)
+        {
+            PickRandomDestination(sweepRadius);
+        }
+        else
+        {
+            currentState = MonsterState.Wandering;
+            agent.speed = wanderSpeed;
+            PickRandomDestination(wanderRadius);
+        }
+    }
+
+    private bool HasReachedWaypoint()
+    {
+        if (agent.pathPending) return false;
+        if (!agent.hasPath) return true;
+
+        float threshold = Mathf.Max(agent.stoppingDistance, waypointSwitchDistance);
+        return agent.remainingDistance <= threshold;
+    }
+
     private void RotateTowardMovement()
     {
-        Vector3 rawDir = agent.desiredVelocity.sqrMagnitude > 0.05f ? agent.desiredVelocity : agent.velocity;
+        Vector3 rawDir = agent.velocity.sqrMagnitude > 0.15f ? agent.velocity : agent.desiredVelocity;
         Vector3 moveDirection = new Vector3(rawDir.x, 0f, rawDir.z);
 
         if (moveDirection.sqrMagnitude > 0.01f)
         {
             Quaternion targetRotation = Quaternion.LookRotation(moveDirection.normalized);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, turnSpeed * Time.deltaTime);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, turnSpeed * Time.deltaTime);
         }
 
         if (modelTransform != null)
@@ -150,11 +216,15 @@ public class MonsterAI : MonoBehaviour
     {
         if (agent == null || !agent.isOnNavMesh) return;
 
-        Vector3 randomOffset = Random.insideUnitSphere * radius;
-        if (NavMesh.SamplePosition(targetArea + randomOffset, out NavMeshHit hit, radius, NavMesh.AllAreas))
+        for (int i = 0; i < 10; i++)
         {
-            agent.speed = wanderSpeed;
-            agent.SetDestination(hit.position);
+            Vector3 randomOffset = Random.insideUnitSphere * radius;
+            if (NavMesh.SamplePosition(targetArea + randomOffset, out NavMeshHit hit, radius, NavMesh.AllAreas))
+            {
+                agent.speed = wanderSpeed;
+                agent.SetDestination(hit.position);
+                return;
+            }
         }
     }
 
@@ -172,7 +242,6 @@ public class MonsterAI : MonoBehaviour
         {
             currentSuspicion = suspicionThreshold;
 
-            // Play the aggression sound when the meter first fills or when transitioning from Wandering
             if (wasBelowThreshold || currentState == MonsterState.Wandering)
             {
                 TryPlayAggressionSound();
@@ -184,7 +253,15 @@ public class MonsterAI : MonoBehaviour
 
             if (agent != null && agent.isOnNavMesh)
             {
-                agent.SetDestination(lastHeardPosition);
+                if (NavMesh.SamplePosition(lastHeardPosition, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+                {
+                    agent.SetDestination(hit.position);
+                }
+                else
+                {
+                    agent.SetDestination(lastHeardPosition);
+                }
+
                 agent.speed = (noiseRadius >= loudNoiseThreshold) ? huntSpeed : suspicionSpeed;
             }
         }
@@ -208,7 +285,6 @@ public class MonsterAI : MonoBehaviour
 
         currentState = MonsterState.Sweeping;
         sweepsRemaining = sweepCount;
-        waitTimer = 0f;
 
         if (agent != null) agent.speed = suspicionSpeed;
 
@@ -217,14 +293,9 @@ public class MonsterAI : MonoBehaviour
 
     private void HandleWandering()
     {
-        if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance)
+        if (HasReachedWaypoint())
         {
-            waitTimer += Time.deltaTime;
-            if (waitTimer >= wanderWaitTime)
-            {
-                PickRandomDestination(wanderRadius);
-                waitTimer = 0f;
-            }
+            PickRandomDestination(wanderRadius);
         }
     }
 
@@ -236,7 +307,7 @@ public class MonsterAI : MonoBehaviour
             return;
         }
 
-        if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance)
+        if (HasReachedWaypoint())
         {
             StartSweeping();
         }
@@ -246,7 +317,6 @@ public class MonsterAI : MonoBehaviour
     {
         currentState = MonsterState.Sweeping;
         sweepsRemaining = sweepCount;
-        waitTimer = 0f;
 
         if (agent != null) agent.speed = suspicionSpeed;
         PickRandomDestination(sweepRadius);
@@ -254,22 +324,17 @@ public class MonsterAI : MonoBehaviour
 
     private void HandleSweeping()
     {
-        if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance)
+        if (HasReachedWaypoint())
         {
-            waitTimer += Time.deltaTime;
-            if (waitTimer >= sweepWaitTime)
-            {
-                sweepsRemaining--;
+            sweepsRemaining--;
 
-                if (sweepsRemaining > 0)
-                {
-                    PickRandomDestination(sweepRadius);
-                    waitTimer = 0f;
-                }
-                else
-                {
-                    ReturnToWandering();
-                }
+            if (sweepsRemaining > 0)
+            {
+                PickRandomDestination(sweepRadius);
+            }
+            else
+            {
+                ReturnToWandering();
             }
         }
     }
@@ -277,7 +342,6 @@ public class MonsterAI : MonoBehaviour
     private void ReturnToWandering()
     {
         currentState = MonsterState.Wandering;
-        waitTimer = 0f;
         currentSuspicion = 0f;
 
         if (agent != null)
@@ -294,13 +358,26 @@ public class MonsterAI : MonoBehaviour
     {
         if (agent == null || !agent.isOnNavMesh) return;
 
-        Vector3 randomDirection = Random.insideUnitSphere * radius;
         Vector3 searchCenter = (currentState == MonsterState.Sweeping) ? lastHeardPosition : transform.position;
-        randomDirection += searchCenter;
 
-        if (NavMesh.SamplePosition(randomDirection, out NavMeshHit hit, radius, NavMesh.AllAreas))
+        for (int i = 0; i < 12; i++)
         {
-            agent.SetDestination(hit.position);
+            Vector2 circle = Random.insideUnitCircle.normalized * Random.Range(radius * 0.4f, radius);
+            Vector3 candidate = searchCenter + new Vector3(circle.x, 0f, circle.y);
+
+            if (NavMesh.SamplePosition(candidate, out NavMeshHit hit, radius, NavMesh.AllAreas))
+            {
+                if ((hit.position - transform.position).sqrMagnitude > 1.5f)
+                {
+                    agent.SetDestination(hit.position);
+                    return;
+                }
+            }
+        }
+
+        if (NavMesh.SamplePosition(transform.position + Random.insideUnitSphere * (wanderRadius * 2f), out NavMeshHit fallbackHit, wanderRadius * 2f, NavMesh.AllAreas))
+        {
+            agent.SetDestination(fallbackHit.position);
         }
     }
 }

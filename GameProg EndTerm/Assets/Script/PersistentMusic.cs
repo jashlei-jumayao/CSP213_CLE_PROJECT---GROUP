@@ -16,5 +16,12 @@ public class PersistentMusic : MonoBehaviour
         // Otherwise, make this the official music player and keep it alive
         instance = this;
         DontDestroyOnLoad(gameObject);
+
+        // Keep playing even when PauseMenu sets AudioListener.pause = true
+        AudioSource[] musicSources = GetComponentsInChildren<AudioSource>(true);
+        foreach (AudioSource source in musicSources)
+        {
+            source.ignoreListenerPause = true;
+        }
     }
 }
