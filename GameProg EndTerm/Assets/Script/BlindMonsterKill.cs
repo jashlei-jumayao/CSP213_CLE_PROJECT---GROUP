@@ -14,7 +14,7 @@ public class MonsterCatchPlayer : MonoBehaviour
     public float videoAudioVolume = 1f;
 
     [Header("Additional Audio & Fallback")]
-    [Tooltip("Drag an AudioClip (MP3/WAV/OGG) here to play alongside the video (or as backup if Unity can't decode the MP4's audio).")]
+    [Tooltip("Drag an AudioClip (MP3/WAV/OGG) here to play alongside the video.")]
     public AudioClip extraJumpscareAudio;
     [Range(0f, 1f)]
     public float extraAudioVolume = 1f;
@@ -22,12 +22,21 @@ public class MonsterCatchPlayer : MonoBehaviour
     public float fallbackRestartDelay = 2.0f;
 
     [Header("Game Over & Pause UI Panels")]
-    [Tooltip("Assign your Game Over UI Panel here (starts hidden automatically and turns on after the jumpscare).")]
+    [Tooltip("Assign your Game Over UI Panel here (starts hidden automatically and turns on over the frozen video frame).")]
     public GameObject gameOverPanel;
-    [Tooltip("Optional: Assign your Pause Menu UI Panel so it is guaranteed hidden on Game Over.")]
+    [Tooltip("Delay in seconds after the jumpscare finishes before the Game Over panel pops up.")]
+    public float gameOverDelay = 3.0f;
+    [Tooltip("Optional: Assign your Pause Menu UI Panel so it is hidden on Game Over.")]
     public GameObject pauseMenuPanel;
 
+    [Header("Scripts to Disable on Catch")]
+    [Tooltip("Assign your Pause Menu controller script here so the player cannot press Esc during Game Over.")]
+    public MonoBehaviour pauseMenuScript;
+    [Tooltip("Optional: Any extra player scripts (e.g., mouse look, flashlight) to disable when caught.")]
+    public MonoBehaviour[] extraScriptsToDisable;
+
     private bool isCatching = false;
+    private RenderTexture activeRenderTexture;
 
     private void Start()
     {
@@ -37,11 +46,23 @@ public class MonsterCatchPlayer : MonoBehaviour
         }
     }
 
+    private void OnDestroy()
+    {
+        if (activeRenderTexture != null)
+        {
+            activeRenderTexture.Release();
+            Destroy(activeRenderTexture);
+            activeRenderTexture = null;
+        }
+    }
+
     private void OnTriggerEnter(Collider other)
     {
         if (isCatching) return;
 
-        Transform rootTransform = other.attachedRigidbody != null ? other.attachedRigidbody.transform : other.transform.root;
+        Transform rootTransform = other.attachedRigidbody != null
+            ? other.attachedRigidbody.transform
+            : other.transform.root;
 
         if (rootTransform.CompareTag("Player") || other.CompareTag("Player"))
         {
@@ -59,14 +80,12 @@ public class MonsterCatchPlayer : MonoBehaviour
     {
         isCatching = true;
 
-        // Ensure global Unity audio is unmuted and unpaused
         AudioListener.pause = false;
         if (AudioListener.volume <= 0.01f) AudioListener.volume = 1f;
 
-        // 1. Completely lock down player movement, camera look, actions, and pausing
-        DisableAllPlayerAndPauseControls(playerRoot);
+        // 1. Safely disable player movement, spawners, and pause controls
+        DisablePlayerAndPauseControls(playerRoot);
 
-        // Prepare extra AudioSource
         AudioSource extraSource = null;
         if (extraJumpscareAudio != null)
         {
@@ -78,10 +97,20 @@ public class MonsterCatchPlayer : MonoBehaviour
             extraSource.ignoreListenerPause = true;
         }
 
+        int videoSortingOrder = 100;
+        if (gameOverPanel != null)
+        {
+            Canvas gameOverCanvas = gameOverPanel.GetComponentInParent<Canvas>(true);
+            if (gameOverCanvas != null && gameOverCanvas.sortingOrder > 0)
+            {
+                videoSortingOrder = gameOverCanvas.sortingOrder - 1;
+            }
+        }
+
         GameObject overlayObj = new GameObject("RuntimeJumpscareCanvas");
         Canvas canvas = overlayObj.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 32767;
+        canvas.sortingOrder = videoSortingOrder;
         overlayObj.AddComponent<CanvasScaler>();
 
         GameObject bgObj = new GameObject("BlackBackdrop");
@@ -100,9 +129,9 @@ public class MonsterCatchPlayer : MonoBehaviour
 
             int width = jumpscareClip.width > 0 ? (int)jumpscareClip.width : 1920;
             int height = jumpscareClip.height > 0 ? (int)jumpscareClip.height : 1080;
-            RenderTexture rt = new RenderTexture(width, height, 0);
-            rt.Create();
-            rawImage.texture = rt;
+            activeRenderTexture = new RenderTexture(width, height, 0);
+            activeRenderTexture.Create();
+            rawImage.texture = activeRenderTexture;
 
             VideoPlayer vp = overlayObj.AddComponent<VideoPlayer>();
             vp.playOnAwake = false;
@@ -110,7 +139,7 @@ public class MonsterCatchPlayer : MonoBehaviour
             vp.source = VideoSource.VideoClip;
             vp.clip = jumpscareClip;
             vp.renderMode = VideoRenderMode.RenderTexture;
-            vp.targetTexture = rt;
+            vp.targetTexture = activeRenderTexture;
             vp.aspectRatio = VideoAspectRatio.FitInside;
 
             vp.audioOutputMode = VideoAudioOutputMode.Direct;
@@ -149,8 +178,8 @@ public class MonsterCatchPlayer : MonoBehaviour
                 yield return null;
             }
 
-            vp.Stop();
-            rt.Release();
+            // Hold on the final frame of the video
+            vp.Pause();
         }
         else
         {
@@ -160,64 +189,78 @@ public class MonsterCatchPlayer : MonoBehaviour
             yield return new WaitForSecondsRealtime(waitTime);
         }
 
-        // 2. Remove video overlay, pause time, unlock cursor, and turn on your Game Over panel
-        if (overlayObj != null)
+        // 2. Wait 3 seconds while holding on the frozen frame before popping up Game Over
+        if (gameOverDelay > 0f)
         {
-            Destroy(overlayObj);
+            yield return new WaitForSecondsRealtime(gameOverDelay);
         }
 
-        ShowGameOverScreen();
+        // 3. Turn on the Game Over panel in front of the frozen frame
+        ShowGameOverScreen(videoSortingOrder);
     }
 
-    private void DisableAllPlayerAndPauseControls(Transform playerRoot)
+    private void DisablePlayerAndPauseControls(Transform playerRoot)
     {
-        // Stop rigidbody movement immediately so the robot doesn't keep sliding
-        Rigidbody[] bodies = playerRoot.GetComponentsInChildren<Rigidbody>(true);
-        foreach (Rigidbody rb in bodies)
+        if (playerRoot.TryGetComponent<Rigidbody>(out var rb) && !rb.isKinematic)
         {
-            if (!rb.isKinematic)
-            {
-                rb.velocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-            }
+#if UNITY_6000_0_OR_NEWER
+            rb.linearVelocity = Vector3.zero;
+#else
+            rb.velocity = Vector3.zero;
+#endif
+            rb.angularVelocity = Vector3.zero;
         }
 
-        // Disable all player gameplay scripts (movement, mouse look, flashlight, noise, spawners, etc.)
-        MonoBehaviour[] playerScripts = playerRoot.GetComponentsInChildren<MonoBehaviour>(true);
-        foreach (MonoBehaviour script in playerScripts)
+        if (playerRoot.TryGetComponent<WheeledRobotMovement>(out var movement))
         {
-            if (script != null && script != this)
-            {
-                script.enabled = false;
-            }
+            movement.enabled = false;
         }
 
-        // Disable any Pause script in the scene so pressing Esc cannot open Pause over Game Over
-        MonoBehaviour[] allSceneScripts = FindObjectsOfType<MonoBehaviour>(true);
-        foreach (MonoBehaviour script in allSceneScripts)
-        {
-            if (script == null || script == this) continue;
+        BlindMonsterNoiseSpawner blindSpawner = playerRoot.GetComponentInChildren<BlindMonsterNoiseSpawner>();
+        if (blindSpawner != null) blindSpawner.enabled = false;
 
-            string typeName = script.GetType().Name.ToLowerInvariant();
-            if (typeName.Contains("pause"))
-            {
-                script.enabled = false;
-            }
+        VisionMonsterLightSpawner visionSpawner = playerRoot.GetComponentInChildren<VisionMonsterLightSpawner>();
+        if (visionSpawner != null) visionSpawner.enabled = false;
+
+        if (pauseMenuScript != null)
+        {
+            pauseMenuScript.enabled = false;
         }
 
         if (pauseMenuPanel != null)
         {
             pauseMenuPanel.SetActive(false);
         }
+
+        if (extraScriptsToDisable != null)
+        {
+            foreach (MonoBehaviour script in extraScriptsToDisable)
+            {
+                if (script != null && script != this)
+                {
+                    script.enabled = false;
+                }
+            }
+        }
     }
 
-    private void ShowGameOverScreen()
+    private void ShowGameOverScreen(int videoSortingOrder)
     {
         Time.timeScale = 0f;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
 
-        EnsureEventSystemExists();
+#if UNITY_6000_0_OR_NEWER
+        bool hasEventSystem = FindFirstObjectByType<EventSystem>() != null;
+#else
+        bool hasEventSystem = FindObjectOfType<EventSystem>() != null;
+#endif
+        if (!hasEventSystem)
+        {
+            GameObject esObj = new GameObject("EventSystem");
+            esObj.AddComponent<EventSystem>();
+            esObj.AddComponent<StandaloneInputModule>();
+        }
 
         if (gameOverPanel != null)
         {
@@ -225,20 +268,15 @@ public class MonsterCatchPlayer : MonoBehaviour
             if (parentCanvas != null)
             {
                 parentCanvas.gameObject.SetActive(true);
+
+                if (parentCanvas.sortingOrder <= videoSortingOrder)
+                {
+                    parentCanvas.sortingOrder = videoSortingOrder + 1;
+                }
             }
 
             gameOverPanel.SetActive(true);
             gameOverPanel.transform.SetAsLastSibling();
-        }
-    }
-
-    private void EnsureEventSystemExists()
-    {
-        if (FindObjectOfType<EventSystem>() == null)
-        {
-            GameObject esObj = new GameObject("EventSystem");
-            esObj.AddComponent<EventSystem>();
-            esObj.AddComponent<StandaloneInputModule>();
         }
     }
 

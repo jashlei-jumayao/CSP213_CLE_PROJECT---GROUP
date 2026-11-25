@@ -1,19 +1,29 @@
 using UnityEngine;
-using UnityEngine.SceneManagement; // Required to change scenes
+using UnityEngine.SceneManagement;
 
 public class MainMenuManager : MonoBehaviour
 {
-    // Must be public so the buttons can access it
+    private void Start()
+    {
+        // Ensure cursor is unlocked and visible if returning from gameplay
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+    }
+
     public void PlayGame()
     {
-        // Loads the next scene in the Build Settings queue
-        // You can also use a string name like: SceneManager.LoadScene("GameScene");
+        Time.timeScale = 1f;
         SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex + 1);
     }
 
     public void QuitGame()
     {
-        Debug.Log("Game Quit!"); // This lets you know it works in the Editor
-        Application.Quit();      // This only closes the actual built application
+        Debug.Log("Game Quit!");
+
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+        Application.Quit();
+#endif
     }
 }
